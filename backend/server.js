@@ -21,8 +21,17 @@ const pinLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
 });
-app.use('/api/validate-pin', pinLimiter);
-app.use('/api/biometric-connect', pinLimiter);
+// Separate limiter for the registration step — same window/count but
+// a message that makes sense on the personal-details form, not the PIN form.
+const connectLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 10,
+    message: { error: 'Too many submission attempts. Please wait 5 minutes before trying again.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use('/api/validate-pin',     pinLimiter);
+app.use('/api/biometric-connect', connectLimiter);
 
 // ====== HARDCODED SERVER CONFIG ======
 const PORT = 5501; // same port for both HTTP and HTTPS

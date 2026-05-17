@@ -1015,30 +1015,59 @@ class AttendanceRegistrationApp {
             this._clearForm();
             // Do NOT call _scheduleReset — the page stays on the success screen
         } else {
-            const text = await r.text();
-            this._status(`Server error (${r.status}): ${text}`, 'error');
+            let msg;
+            switch (r.status) {
+                case 429: msg = 'Too many submission attempts. Please wait 5 minutes before trying again.'; break;
+                case 400: msg = 'Invalid details — check your name, Student ID, and email then try again.'; break;
+                case 403: {
+                    const body = await r.text();
+                    msg = body.toLowerCase().includes('geofence')
+                        ? 'You appear to be outside the classroom. Move closer and try again.'
+                        : body.toLowerCase().includes('face')
+                            ? 'Face verification expired. Go back and retake your photo.'
+                            : body || 'Access denied. Please restart the registration process.';
+                    break;
+                }
+                case 404: msg = 'Session not found or expired. Ask your instructor to check the server.'; break;
+                case 409: msg = 'You are already registered for this session.'; break;
+                default:  msg = `Registration failed (error ${r.status}). Please try again or contact your instructor.`;
+            }
+            this._status(msg, 'error');
         }
     }
 
     /* ── Registered success state ── */
 
     _showRegisteredState(name) {
-        // Hide all step sections
+        // Force-hide all step sections with inline style — this beats any CSS specificity issue
+        // and is guaranteed to work even if classList toggling is unreliable on some browsers.
+        this.el.pinSection.style.display          = 'none';
+        this.el.faceSection.style.display         = 'none';
+        this.el.registrationSection.style.display = 'none';
+
+        // Keep classList in sync so _goToStep() state stays consistent
         this.el.pinSection.classList.add('hidden');
         this.el.faceSection.classList.add('hidden');
         this.el.registrationSection.classList.add('hidden');
 
-        // Show success panel with student's name
+        // Show success section
+        this.el.successSection.style.display = 'block';
+        this.el.successSection.classList.remove('hidden');
+
+        // Populate success content
         this.el.successName.textContent = `Hi, ${name}!`;
         const session = this.validatedSession;
-        if (session && session.courseName) {
+        if (session?.courseName) {
             this.el.successCourse.textContent =
                 session.courseName + (session.courseCode ? ` · ${session.courseCode}` : '');
         }
-        this.el.successSection.classList.remove('hidden');
 
-        // Mark all stepper pills as done
-        this.el.pills.forEach(pill => { pill.className = 'step-pill done'; });
+        // Mark all stepper pills as done (inline style + class)
+        this.el.pills.forEach(pill => {
+            pill.className  = 'step-pill done';
+            pill.style.width = '10px';
+            pill.style.background = 'rgba(255,255,255,.65)';
+        });
     }
 
     /* ── Persist registration to localStorage (survives page reload) ── */
