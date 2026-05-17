@@ -1,3 +1,4 @@
+import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/route_constants.dart';
@@ -74,35 +75,40 @@ class _HomeScreenState extends State<HomeScreen>
           SafeArea(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                // Scale relative to a 780 pt reference height.
-                // Clamped: never shrinks below 70 % or grows past 100 %.
-                final s = (constraints.maxHeight / 780.0).clamp(0.70, 1.0);
+                final h = constraints.maxHeight;
+                final w = constraints.maxWidth;
+
+                // Scale factor relative to 780 pt reference height.
+                // Clamp floor at 0.55 so text stays legible on very small phones.
+                final s         = (h / 780.0).clamp(0.55, 1.0);
                 final iconSize  = 110.0 * s;
-                final titleSize = (34.0 * s).clamp(22.0, 34.0);
-                final hPad      = 24.0 * s;
+                final titleSize = (34.0 * s).clamp(18.0, 34.0);
+                final hPad      = (24.0 * s).clamp(14.0, 24.0);
 
-                return Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 500),
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: hPad),
+                // Content width: full width minus padding, capped at 500.
+                final contentW = min(w - hPad * 2, 500.0);
+
+                return SizedBox(
+                  width:  w,
+                  height: h,
+                  // FittedBox.scaleDown is the safety net: if total content height
+                  // still exceeds the screen after manual scaling, it uniformly
+                  // shrinks everything to fit — no overflow, no scrolling.
+                  child: FittedBox(
+                    fit:       BoxFit.scaleDown,
+                    alignment: Alignment.center,
+                    child: SizedBox(
+                      width: contentW,
                       child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Spacer(flex: 3),
-
-                          // ── Header ──────────────────────────────────────
+                          SizedBox(height: 20 * s),
                           _buildHeader(iconSize, titleSize, s),
-
-                          const Spacer(flex: 2),
-
-                          // ── Server status ────────────────────────────────
+                          SizedBox(height: 14 * s),
                           const SectionHeader(label: 'SERVER STATUS'),
-                          SizedBox(height: 8 * s),
+                          SizedBox(height: 7 * s),
                           const ServerStatusBanner(),
-
-                          const Spacer(flex: 3),
-
-                          // ── Role selection ───────────────────────────────
+                          SizedBox(height: 18 * s),
                           const SectionHeader(label: 'SELECT YOUR ROLE'),
                           SizedBox(height: 10 * s),
                           _buildLecturerCard(),
@@ -116,28 +122,26 @@ class _HomeScreenState extends State<HomeScreen>
                               style: TextButton.styleFrom(
                                 foregroundColor: const Color(0xFF1A3A6B),
                                 visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 4, vertical: 2),
                               ),
                             ),
                           ),
                           SizedBox(height: 6 * s),
                           RoleCard(
-                            title: 'Student',
-                            subtitle: 'Register attendance for active sessions',
-                            icon: Icons.person_rounded,
+                            title:       'Student',
+                            subtitle:    'Register attendance for active sessions',
+                            icon:        Icons.person_rounded,
                             accentColor: const Color(0xFF2E6BB8),
-                            onTap: () => context.navigateTo(RouteConstants.register),
+                            onTap:       () => context.navigateTo(RouteConstants.register),
                             entranceDelay: 320,
                           ),
-
-                          const Spacer(flex: 3),
-
-                          // ── Footer ───────────────────────────────────────
+                          SizedBox(height: 14 * s),
                           Text('Smart attendance · Powered by Wi-Fi hotspot',
                               style: TextStyle(fontSize: 11,
                                   color: Theme.of(context).colorScheme.onSurface
                                       .withValues(alpha: 0.28))),
-                          const Spacer(flex: 1),
+                          SizedBox(height: 16 * s),
                         ],
                       ),
                     ),
@@ -159,11 +163,10 @@ class _HomeScreenState extends State<HomeScreen>
         builder: (_, child) => Opacity(
           opacity: _headerAnim.value,
           child: Transform.translate(
-              offset: Offset(0, -24 * (1 - _headerAnim.value)), child: child),
+              offset: Offset(0, -20 * (1 - _headerAnim.value)), child: child),
         ),
         child: Column(
           children: [
-            // FittedBox scales the fixed FloatingIconBox to our computed iconSize
             SizedBox(
               width: iconSize, height: iconSize,
               child: const FittedBox(
@@ -171,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen>
                 child: FloatingIconBox(child: AnimatedRadarIcon()),
               ),
             ),
-            SizedBox(height: 14 * s),
+            SizedBox(height: 12 * s),
             Text('Offline Hotspot Attendance',
                 style: TextStyle(
                   fontSize: titleSize,

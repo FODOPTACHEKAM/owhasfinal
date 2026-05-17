@@ -213,6 +213,19 @@
         }
         @keyframes hb-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.75)}}
 
+        /* ── Registered success state ── */
+        .reg-success{text-align:center;padding:1.5rem 0 .75rem}
+        .reg-success-icon{
+            width:60px;height:60px;border-radius:50%;
+            background:linear-gradient(135deg,var(--success) 0%,#059669 100%);
+            color:#fff;font-size:1.9rem;line-height:1;
+            display:inline-flex;align-items:center;justify-content:center;
+            margin-bottom:1rem;box-shadow:0 4px 16px rgba(16,185,129,.4);
+        }
+        .reg-success-name{font-size:1.35rem;font-weight:700;color:var(--gray-900);margin-bottom:.3rem}
+        .reg-success-course{font-size:.85rem;color:var(--gray-500);margin-bottom:.5rem}
+        .reg-success-label{font-size:.75rem;color:var(--gray-400)}
+
         @media(max-width:640px){
             .card-header{padding:2rem 1.25rem 1.25rem}
             .card-header h1{font-size:1.4rem}
@@ -354,6 +367,16 @@
                 <span>Register for Attendance</span>
             </button>
             <button class="button-secondary" id="backToFaceBtn" type="button">← Retake Photo</button>
+        </section>
+
+        <!-- ── Step 3: Registered state (replaces all steps after success) ── -->
+        <section id="successSection" class="hidden">
+            <div class="reg-success">
+                <div class="reg-success-icon">✓</div>
+                <div class="reg-success-name" id="successName">Registered!</div>
+                <div class="reg-success-course" id="successCourse"></div>
+                <div class="reg-success-label">Keep this page open to confirm attendance.</div>
+            </div>
         </section>
 
         <!-- ── Status panel (always visible) ── -->
@@ -511,6 +534,11 @@ class AttendanceRegistrationApp {
             email:          document.getElementById('email'),
             submitBtn:      document.getElementById('submitBtn'),
             backToFaceBtn:  document.getElementById('backToFaceBtn'),
+
+            // Step 3 – Registered
+            successSection: document.getElementById('successSection'),
+            successName:    document.getElementById('successName'),
+            successCourse:  document.getElementById('successCourse'),
 
             // Status
             statusPanel:   document.getElementById('statusPanel'),
@@ -755,21 +783,45 @@ class AttendanceRegistrationApp {
                     matricule:    payload.matricule,
                     pin:          this.currentPin,
                     sessionToken: this.sessionToken,
+                    name:         payload.username,
                 });
             } else {
+                // Offline/local session — show success state and a simple status
+                this._showRegisteredState(payload.username);
                 this._status(`✓ ${msg}`, 'success');
             }
             this._clearForm();
-            this._scheduleReset();
+            // Do NOT call _scheduleReset — the page stays on the success screen
         } else {
             const text = await r.text();
             this._status(`Server error (${r.status}): ${text}`, 'error');
         }
     }
 
+    /* ── Registered success state ── */
+
+    _showRegisteredState(name) {
+        // Hide all step sections
+        this.el.pinSection.classList.add('hidden');
+        this.el.faceSection.classList.add('hidden');
+        this.el.registrationSection.classList.add('hidden');
+
+        // Show success panel with student's name
+        this.el.successName.textContent = `Hi, ${name}!`;
+        const session = this.validatedSession;
+        if (session && session.courseName) {
+            this.el.successCourse.textContent =
+                session.courseName + (session.courseCode ? ` · ${session.courseCode}` : '');
+        }
+        this.el.successSection.classList.remove('hidden');
+
+        // Mark all stepper pills as done
+        this.el.pills.forEach(pill => { pill.className = 'step-pill done'; });
+    }
+
     /* ── GPS heartbeat (online sessions only) ── */
 
-    _startHeartbeat({ token, intervalMs, matricule, pin, sessionToken }) {
+    _startHeartbeat({ token, intervalMs, matricule, pin, sessionToken, name }) {
         // Cancel any heartbeat from a previous registration on the same page load
         if (this._heartbeatTimer) {
             clearInterval(this._heartbeatTimer);
@@ -786,12 +838,16 @@ class AttendanceRegistrationApp {
         }, { once: true });
 
         const intervalMinutes = Math.round(intervalMs / 60000);
+
+        // Show the registered success state with the student's name
+        this._showRegisteredState(name || matricule || 'Student');
+
         // Use the dedicated heartbeat panel style (pulsing green dot)
         this.el.statusPanel.className = 'info-panel heartbeat';
         this.el.statusContent.innerHTML =
             `<span class="heartbeat-dot"></span>` +
-            `Registered ✓ — <strong>Keep this page open.</strong> ` +
-            `Your location is confirmed every ${intervalMinutes} min to verify attendance.`;
+            `<strong>${name || 'You'}</strong> — attendance active. ` +
+            `Location confirmed every ${intervalMinutes} min. Keep this page open.`;
     }
 
     async _sendHeartbeat() {

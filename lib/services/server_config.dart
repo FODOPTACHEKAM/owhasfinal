@@ -45,38 +45,43 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
 
     for (int i = 0; i < results.length; i++) {
       if (results[i]) {
-        print('[ServerConfig] Detected server: ${allCandidates[i]}');
+        debugPrint('[ServerConfig] Detected server: ${allCandidates[i]}');
         return _ServerDetectionResult(url: allCandidates[i], isOnline: false);
       }
     }
   } catch (e) {
-    print('[ServerConfig] Subnet scan error: $e');
+    debugPrint('[ServerConfig] Subnet scan error: $e');
   }
 
   // 3. Try emulator loopback.
   try {
     final emulatorUrl = ServerConfig().emulatorUrl;
     if (await _pingWithStrictTimeout(emulatorUrl, strictTimeout)) {
-      print('[ServerConfig] Detected emulator URL: $emulatorUrl');
+      debugPrint('[ServerConfig] Detected emulator URL: $emulatorUrl');
       return _ServerDetectionResult(url: emulatorUrl, isOnline: false);
     }
   } catch (e) {
-    print('[ServerConfig] Emulator check error: $e');
+    debugPrint('[ServerConfig] Emulator check error: $e');
   }
 
-  // 4. Try online cloud URL.
-  try {
-    final onlineUrl = ServerConfig().onlineUrl;
-    if (await _pingWithStrictTimeout(onlineUrl, const Duration(seconds: 2))) {
-      print('[ServerConfig] Detected online server: $onlineUrl');
-      return _ServerDetectionResult(url: onlineUrl, isOnline: true);
+  // 4. Try online cloud URLs — HTTP:5501 first (no proxy needed), then HTTPS.
+  final cloudCandidates = [
+    ServerConfig().onlineUrlHttp,  // http://owhas.org:5501
+    ServerConfig().onlineUrl,      // https://owhas.org  (reverse proxy)
+  ];
+  for (final url in cloudCandidates) {
+    try {
+      if (await _pingWithStrictTimeout(url, const Duration(seconds: 5))) {
+        debugPrint('[ServerConfig] Detected online server: $url');
+        return _ServerDetectionResult(url: url, isOnline: true);
+      }
+    } catch (e) {
+      debugPrint('[ServerConfig] Online check error ($url): $e');
     }
-  } catch (e) {
-    print('[ServerConfig] Online check error: $e');
   }
 
   // 5. Fallback.
-  print('[ServerConfig] No server detected. Falling back to default hotspot URL.');
+  debugPrint('[ServerConfig] No server detected. Falling back to default hotspot URL.');
   return _ServerDetectionResult(url: 'http://192.168.137.1:5501', isOnline: false);
 }
 
@@ -112,7 +117,8 @@ class ServerConfig {
   factory ServerConfig() => _instance;
   ServerConfig._internal();
 
-  static const String _onlineUrl = 'https://owhas.org';
+  static const String _onlineUrl     = 'https://owhas.org';       // with reverse proxy
+  static const String _onlineUrlHttp = 'http://owhas.org:5501';   // direct HTTP (no proxy)
   static const String _defaultEmulatorHost = '10.0.2.2';
   static const String _defaultHotspotHost = '192.168.137.1';
   static const int _defaultServerPort = 5501;
@@ -131,8 +137,11 @@ class ServerConfig {
       Uri(scheme: 'http', host: _defaultHotspotHost, port: _defaultServerPort)
           .toString();
 
-  /// The fixed online cloud endpoint.
+  /// The fixed online cloud endpoint (HTTPS — requires reverse proxy on the server).
   String get onlineUrl => _onlineUrl;
+
+  /// Direct HTTP access to the cloud server on port 5501 (no reverse proxy needed).
+  String get onlineUrlHttp => _onlineUrlHttp;
 
   /// True if connected to the cloud, false if connected to local Intranet.
   bool get isOnline => _isOnline;
@@ -155,7 +164,7 @@ class ServerConfig {
         }
       }
     } catch (e) {
-      print('[ServerConfig] Failed to fetch dynamic QR URL: $e');
+      debugPrint('[ServerConfig] Failed to fetch dynamic QR URL: $e');
     }
     // Fallback to static URL
     return baseQrUrl;
@@ -187,7 +196,7 @@ class ServerConfig {
         _detectedUrl = result.url;
         _isOnline = result.isOnline;
         _hasDetected = true;
-        print(
+        debugPrint(
           '[ServerConfig] Server detection complete. '
           'URL: $_detectedUrl, Online: $_isOnline',
         );
@@ -196,11 +205,11 @@ class ServerConfig {
         _detectedUrl = hotspotUrl;
         _isOnline = false;
         _hasDetected = true;
-        print('[ServerConfig] Fallback to default hotspot URL');
+        debugPrint('[ServerConfig] Fallback to default hotspot URL');
       }
     } catch (e) {
       // Handle any unexpected errors gracefully
-      print('[ServerConfig] Detection error: $e. Falling back to hotspot.');
+      debugPrint('[ServerConfig] Detection error: $e. Falling back to hotspot.');
       _detectedUrl = hotspotUrl;
       _isOnline = false;
       _hasDetected = true;
