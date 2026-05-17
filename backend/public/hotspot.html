@@ -292,18 +292,23 @@
                 <span class="step-counter">2 / 3</span>
             </div>
 
-            <!-- Photo preview — shows captured selfie -->
+            <!-- Photo preview — shows live webcam (desktop HTTPS) or captured photo (mobile/HTTP) -->
             <div class="face-preview-wrapper" id="facePreviewWrapper">
                 <div id="facePlaceholder" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#9ca3af">
                     <span style="font-size:3.5rem">📷</span>
                     <p style="margin:0.5rem 0 0;font-size:0.85rem">Your photo will appear here</p>
                 </div>
+                <!-- Live webcam feed — shown on desktop when page is served over HTTPS -->
+                <video id="webcamVideo" autoplay playsinline muted
+                       style="display:none;width:100%;height:100%;object-fit:cover;border-radius:inherit;transform:scaleX(-1)"></video>
+                <!-- Off-screen canvas used to grab a frame from the webcam -->
+                <canvas id="webcamCanvas" style="display:none;position:absolute;pointer-events:none"></canvas>
                 <img id="facePreview" alt="Captured photo"
                      style="display:none;width:100%;height:100%;object-fit:cover;border-radius:inherit">
                 <div class="face-status" id="faceStatus">Loading face models…</div>
             </div>
 
-            <!-- Hidden file input — opens native Android camera (works on plain HTTP) -->
+            <!-- Hidden file input — opens native camera on mobile (works on plain HTTP) -->
             <input type="file" id="faceInput" accept="image/*" capture="user" style="display:none">
 
             <!-- Model load progress -->
@@ -311,11 +316,11 @@
 
             <!-- Guide -->
             <div class="face-guide-row">
-                <span>Tap <strong>Take Selfie</strong>. Hold your phone steady and look directly at the camera.</span>
+                <span>Tap <strong>Take Photo</strong>. Look directly at the camera — on PC your webcam opens automatically (HTTPS only).</span>
             </div>
 
             <button class="button-primary" id="captureBtn" type="button" disabled>
-                <span>📸 Take Selfie</span>
+                <span>📸 Take Photo</span>
             </button>
             <button class="button-secondary" id="backToPinBtn" type="button">← Back to PIN</button>
         </section>
@@ -407,20 +412,29 @@
 const HEARTBEAT_INTERVAL_MINUTES = 2;   // ← keep in sync with server.js
 
 /* ════════════════════════════════════════════════════════════
-   FacePhotoManager
-   Uses <input type="file" capture="user"> — no HTTPS or getUserMedia needed.
-   face-api.js runs on the captured image after the native camera returns it.
+   FacePhotoManager — dual-mode capture
+   ─────────────────────────────────────────────────────────
+   Desktop + HTTPS  → getUserMedia() live webcam stream.
+                      User sees themselves, taps Take Photo
+                      to freeze a frame for face-api analysis.
+   Mobile  OR HTTP  → <input capture="user"> opens the native
+                      camera app (no HTTPS required).
+                      File picker fallback on desktop/HTTP.
 ════════════════════════════════════════════════════════════ */
 class FacePhotoManager {
-    constructor({ statusEl, progressEl, previewEl, placeholderEl, fileInputEl, onCaptured }) {
+    constructor({ statusEl, progressEl, previewEl, placeholderEl, fileInputEl, videoEl, canvasEl, onCaptured }) {
         this.statusEl      = statusEl;
         this.progressEl    = progressEl;
         this.previewEl     = previewEl;
         this.placeholderEl = placeholderEl;
         this.fileInputEl   = fileInputEl;
+        this.videoEl       = videoEl;
+        this.canvasEl      = canvasEl;
         this.onCaptured    = onCaptured || (() => {});
         this.descriptor    = null;
         this.modelsLoaded  = false;
+        this.useWebcam     = false;
+        this.stream        = null;
     }
 
     setStatus(msg)  { if (this.statusEl)   this.statusEl.textContent   = msg; }
@@ -440,15 +454,83 @@ class FacePhotoManager {
         await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
         this.modelsLoaded = true;
         this.setProgress('');
-        this.setStatus('Ready - tap Take Selfie to begin.');
-        this.fileInputEl.addEventListener('change', e => this._onFileSelected(e));
+
+        // Webcam mode: desktop browser + secure context (HTTPS or localhost)
+        const isMobile  = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const canWebcam = !isMobile
+            && window.isSecureContext
+            && !!navigator.mediaDevices?.getUserMedia
+            && !!this.videoEl;
+
+        if (canWebcam) {
+            await this._startWebcam();
+        } else {
+            // Mobile native camera (capture="user") or plain file picker (HTTP desktop)
+            this.fileInputEl.addEventListener('change', e => this._onFileSelected(e));
+            this.setStatus('Ready — tap Take Photo to begin.');
+        }
     }
 
-    triggerCapture() {
-        if (!this.modelsLoaded) { this.setStatus('Models still loading, please wait...'); return; }
-        this.fileInputEl.value = '';
-        this.fileInputEl.click();
+    /* ── Webcam mode (desktop / HTTPS) ── */
+
+    async _startWebcam() {
+        try {
+            this.stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false,
+            });
+            this.videoEl.srcObject = this.stream;
+            this.videoEl.style.display = 'block';
+            if (this.placeholderEl) this.placeholderEl.style.display = 'none';
+            this.useWebcam = true;
+            this.setStatus('Camera ready — look at the camera and tap Take Photo.');
+        } catch (_) {
+            // Camera permission denied or no camera → fall back to file picker
+            this.useWebcam = false;
+            this.fileInputEl.addEventListener('change', e => this._onFileSelected(e));
+            this.setStatus('Camera not accessible — select a photo instead.');
+        }
     }
+
+    async _captureFromWebcam() {
+        const video  = this.videoEl;
+        const canvas = this.canvasEl;
+
+        // Freeze the current video frame onto canvas
+        canvas.width  = video.videoWidth  || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+
+        // Show the frozen frame in the preview image
+        this.previewEl.src          = canvas.toDataURL('image/jpeg', 0.92);
+        this.previewEl.style.display = 'block';
+        this.videoEl.style.display   = 'none';
+        if (this.placeholderEl) this.placeholderEl.style.display = 'none';
+
+        // Release camera — no need to hold it open after capture
+        this._stopStream();
+
+        // Run face-api on the captured canvas
+        this.setStatus('Analysing photo…');
+        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
+        const detection = await faceapi
+            .detectSingleFace(canvas, options)
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+
+        if (!detection) {
+            this.setStatus('No face detected — try again, facing the camera directly.');
+            this.previewEl.style.display = 'none';
+            await this._startWebcam(); // restart webcam for retry
+            return;
+        }
+
+        this.descriptor = Array.from(detection.descriptor);
+        this.setStatus('Face captured — checking with server…');
+        this.onCaptured(this.descriptor);
+    }
+
+    /* ── File-input mode (mobile / HTTP) ── */
 
     async _onFileSelected(e) {
         const file = e.target.files[0];
@@ -461,7 +543,7 @@ class FacePhotoManager {
         if (this.placeholderEl) this.placeholderEl.style.display = 'none';
         await new Promise(res => { this.previewEl.onload = res; });
 
-        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.45 });
+        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
         const detection = await faceapi
             .detectSingleFace(this.previewEl, options)
             .withFaceLandmarks()
@@ -469,18 +551,39 @@ class FacePhotoManager {
         URL.revokeObjectURL(imgUrl);
 
         if (!detection) {
-            this.setStatus('No face detected. Retake the photo - look directly at the camera.');
+            this.setStatus('No face detected. Retake the photo — look directly at the camera.');
             this.previewEl.style.display = 'none';
             if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
             return;
         }
 
         this.descriptor = Array.from(detection.descriptor);
-        this.setStatus('Face captured - checking with server...');
+        this.setStatus('Face captured — checking with server...');
         this.onCaptured(this.descriptor);
     }
 
-    stop() { /* no video stream to release */ }
+    /* ── Shared ── */
+
+    triggerCapture() {
+        if (!this.modelsLoaded) { this.setStatus('Models still loading, please wait...'); return; }
+        if (this.useWebcam) {
+            this._captureFromWebcam();
+        } else {
+            this.fileInputEl.value = '';
+            this.fileInputEl.click();
+        }
+    }
+
+    _stopStream() {
+        if (this.stream) {
+            this.stream.getTracks().forEach(t => t.stop());
+            this.stream = null;
+        }
+        this.useWebcam = false;
+        if (this.videoEl) this.videoEl.style.display = 'none';
+    }
+
+    stop() { this._stopStream(); }
 }
 
 
@@ -521,6 +624,8 @@ class AttendanceRegistrationApp {
             faceInput:    document.getElementById('faceInput'),
             facePreview:  document.getElementById('facePreview'),
             facePlaceholder: document.getElementById('facePlaceholder'),
+            webcamVideo:  document.getElementById('webcamVideo'),
+            webcamCanvas: document.getElementById('webcamCanvas'),
             modelProgress:document.getElementById('modelProgress'),
             captureBtn:   document.getElementById('captureBtn'),
             backToPinBtn: document.getElementById('backToPinBtn'),
@@ -642,7 +747,9 @@ class AttendanceRegistrationApp {
         this.el.captureBtn.disabled = true;
         if (this.faceManager) { this.faceManager.stop(); this.faceManager = null; }
 
+        // Reset preview and any lingering video display
         this.el.facePreview.style.display = 'none';
+        if (this.el.webcamVideo)  this.el.webcamVideo.style.display  = 'none';
         if (this.el.facePlaceholder) this.el.facePlaceholder.style.display = 'flex';
 
         this.faceManager = new FacePhotoManager({
@@ -651,6 +758,8 @@ class AttendanceRegistrationApp {
             previewEl:     this.el.facePreview,
             placeholderEl: this.el.facePlaceholder,
             fileInputEl:   this.el.faceInput,
+            videoEl:       this.el.webcamVideo,
+            canvasEl:      this.el.webcamCanvas,
             onCaptured:    (descriptor) => this._onFaceCaptured(descriptor),
         });
 
@@ -1023,7 +1132,7 @@ class AttendanceRegistrationApp {
         } else {
             btn.disabled = false;
             btn.innerHTML = id === 'verifyPin'  ? '<span>Verify PIN</span>' :
-                            id === 'capture'    ? '<span>📸 Take Selfie</span>' :
+                            id === 'capture'    ? '<span>📸 Take Photo</span>' :
                                                   '<span>Register for Attendance</span>';
         }
     }

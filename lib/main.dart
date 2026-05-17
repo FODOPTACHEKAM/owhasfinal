@@ -30,9 +30,12 @@ final _svc = _SharedServices();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await CourseService.seedFromManagement();
-  await ServerConfig().detect();
-  await CloudService().initialize();
+  await Future.wait([
+    CourseService.seedFromManagement(),
+    ServerConfig().detect(),
+    CloudService().initialize(),
+    Future.delayed(const Duration(seconds: 2)), // minimum splash duration
+  ]);
   runApp(const MyApp());
 }
 

@@ -512,7 +512,7 @@ app.post('/api/verify-face', (req, res) => {
         return res.status(400).json({ error: 'descriptor must be a 128-element numeric array' });
     }
 
-    const THRESHOLD = 0.6;
+    const THRESHOLD = 0.45;
     for (const entry of session.faceDescriptors) {
         if (faceDistance(descriptor, entry.descriptor) < THRESHOLD) {
             return res.json({ unique: false, matchedName: entry.name });
@@ -563,7 +563,7 @@ app.post('/api/biometric-connect', (req, res) => {
         return res.status(403).send('Face verification expired (5-minute limit). Please redo the face scan.');
 
     // ── Race-condition guard: re-check uniqueness at commit time ──────────────
-    const THRESHOLD = 0.6;
+    const THRESHOLD = 0.45;
     for (const entry of session.faceDescriptors) {
         if (faceDistance(pending.descriptor, entry.descriptor) < THRESHOLD)
             return res.status(403).send(`Duplicate face detected — already registered as "${entry.name}". Proxy attendance is not allowed.`);
