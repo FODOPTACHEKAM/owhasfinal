@@ -64,10 +64,11 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
     debugPrint('[ServerConfig] Emulator check error: $e');
   }
 
-  // 4. Try online cloud URLs — HTTP:5501 first (no proxy needed), then HTTPS.
+  // 4. Try online cloud URLs — HTTPS first (Nginx reverse proxy on port 443),
+  //    then HTTP:5501 as a last resort (port may be blocked on cloud servers).
   final cloudCandidates = [
-    ServerConfig().onlineUrlHttp,  // http://owhas.org:5501
-    ServerConfig().onlineUrl,      // https://owhas.org  (reverse proxy)
+    ServerConfig().onlineUrl,      // https://owhas.org  (reverse proxy, always works)
+    ServerConfig().onlineUrlHttp,  // http://owhas.org:5501 (fallback, may be blocked)
   ];
   for (final url in cloudCandidates) {
     try {

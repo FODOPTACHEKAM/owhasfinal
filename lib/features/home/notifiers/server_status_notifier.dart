@@ -38,11 +38,11 @@ class ServerStatusNotifier extends ChangeNotifier {
     } catch (_) {}
 
     // 2. Primary failed — detection may have fallen back to the default hotspot
-    //    address while the phone is on mobile data. Try both cloud variants
-    //    directly before giving up.
+    //    address while the phone is on mobile data. Try cloud directly before
+    //    giving up. HTTPS first (port 443 via Nginx); HTTP:5501 may be blocked.
     final cloudCandidates = [
-      ServerConfig().onlineUrlHttp,  // http://owhas.org:5501 (direct, no proxy)
-      ServerConfig().onlineUrl,      // https://owhas.org     (reverse proxy)
+      ServerConfig().onlineUrl,      // https://owhas.org     (reverse proxy, port 443)
+      ServerConfig().onlineUrlHttp,  // http://owhas.org:5501 (fallback, may be blocked)
     ];
     for (final cloudUrl in cloudCandidates) {
       try {
