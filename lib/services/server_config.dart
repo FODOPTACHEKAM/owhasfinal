@@ -7,18 +7,31 @@ import 'package:http/http.dart' as http;
 class _ServerDetectionResult {
   final String? url;
   final bool isOnline;
+  final bool isHybrid;   // local server + internet both reachable
 
-  _ServerDetectionResult({required this.url, required this.isOnline});
+  _ServerDetectionResult({required this.url, required this.isOnline, this.isHybrid = false});
 }
 
 /// Top-level function for background server detection (runs in Isolate via compute).
 /// This prevents UI jank by executing on a separate thread.
+///
+/// Detection runs local scan and cloud probe IN PARALLEL so the result correctly
+/// reflects all three states: cloud-only, local-only (wifi), or both (hybrid).
 Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
-  const Duration strictTimeout = Duration(milliseconds: 800);
+  const Duration localTimeout = Duration(milliseconds: 800);
+  // Shorter cloud timeout for the parallel hybrid check — if internet is
+  // available on the VLAN it responds well under 3 s. A slow 4G fallback
+  // uses the longer timeout in step 3 below.
+  const Duration cloudParallelTimeout = Duration(seconds: 3);
 
-  // 1. Fixed candidates — covers hotspot gateways and known PC IPs.
-  //    University VLAN: uncomment the line below and set the IP assigned by IT.
-  //    It must be first so the app connects instantly without scanning.
+  final cloudUrl     = ServerConfig().onlineUrl;      // https://owhas.org
+  final httpFallback = ServerConfig().onlineUrlHttp;  // http://owhas.org:5501
+  final emulatorUrl  = ServerConfig().emulatorUrl;
+
+  // ── 1. Kick off cloud probe immediately (runs while local scan proceeds) ──
+  final cloudFuture = _pingWithStrictTimeout(cloudUrl, cloudParallelTimeout);
+
+  // ── 2. Local scan: fixed gateways + full subnet (all in parallel, 800 ms) ──
   final fixedCandidates = <String>[
     // 'http://10.50.1.5:5501',   // ← University VLAN fixed IP (uncomment + edit when deployed)
     'http://192.168.137.1:5501',  // Windows Mobile Hotspot
@@ -27,61 +40,69 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
     'http://172.20.10.1:5501',    // iOS hotspot
     'http://192.168.50.1:5501',
   ];
-
-  // 2. Full subnet scan of 192.168.0.x and 192.168.1.x (DHCP range .1–.254).
-  // All run in parallel with a short timeout so the total wait is ~800 ms.
   final subnetCandidates = <String>[
     for (int i = 1; i <= 254; i++) 'http://192.168.0.$i:5501',
     for (int i = 1; i <= 254; i++) 'http://192.168.1.$i:5501',
     for (int i = 1; i <= 254; i++) 'http://10.0.0.$i:5501',
   ];
 
+  String? localUrl;
   try {
-    final allCandidates = [...fixedCandidates, ...subnetCandidates];
-    final results = await Future.wait(
-      allCandidates.map((url) => _pingWithStrictTimeout(url, strictTimeout)),
+    final allLocal = [...fixedCandidates, ...subnetCandidates];
+    final results  = await Future.wait(
+      allLocal.map((url) => _pingWithStrictTimeout(url, localTimeout)),
       eagerError: false,
     );
-
     for (int i = 0; i < results.length; i++) {
-      if (results[i]) {
-        debugPrint('[ServerConfig] Detected server: ${allCandidates[i]}');
-        return _ServerDetectionResult(url: allCandidates[i], isOnline: false);
-      }
+      if (results[i]) { localUrl = allLocal[i]; break; }
     }
   } catch (e) {
     debugPrint('[ServerConfig] Subnet scan error: $e');
   }
 
-  // 3. Try emulator loopback.
-  try {
-    final emulatorUrl = ServerConfig().emulatorUrl;
-    if (await _pingWithStrictTimeout(emulatorUrl, strictTimeout)) {
-      debugPrint('[ServerConfig] Detected emulator URL: $emulatorUrl');
-      return _ServerDetectionResult(url: emulatorUrl, isOnline: false);
-    }
-  } catch (e) {
-    debugPrint('[ServerConfig] Emulator check error: $e');
-  }
-
-  // 4. Try online cloud URLs — HTTPS first (Nginx reverse proxy on port 443),
-  //    then HTTP:5501 as a last resort (port may be blocked on cloud servers).
-  final cloudCandidates = [
-    ServerConfig().onlineUrl,      // https://owhas.org  (reverse proxy, always works)
-    ServerConfig().onlineUrlHttp,  // http://owhas.org:5501 (fallback, may be blocked)
-  ];
-  for (final url in cloudCandidates) {
+  // Also check emulator loopback if no local IP found yet
+  if (localUrl == null) {
     try {
-      if (await _pingWithStrictTimeout(url, const Duration(seconds: 5))) {
-        debugPrint('[ServerConfig] Detected online server: $url');
-        return _ServerDetectionResult(url: url, isOnline: true);
+      if (await _pingWithStrictTimeout(emulatorUrl, localTimeout)) {
+        localUrl = emulatorUrl;
       }
-    } catch (e) {
-      debugPrint('[ServerConfig] Online check error ($url): $e');
-    }
+    } catch (_) {}
   }
 
-  // 5. Fallback.
+  // ── 3. Collect cloud result (already running; just await it) ──
+  final cloudUp = await cloudFuture;
+
+  if (localUrl != null && cloudUp) {
+    // Both reachable → hybrid VLAN with internet
+    debugPrint('[ServerConfig] Hybrid detected: local=$localUrl + cloud');
+    return _ServerDetectionResult(url: localUrl, isOnline: false, isHybrid: true);
+  }
+  if (localUrl != null) {
+    debugPrint('[ServerConfig] Local server detected: $localUrl');
+    return _ServerDetectionResult(url: localUrl, isOnline: false);
+  }
+  if (cloudUp) {
+    debugPrint('[ServerConfig] Cloud server detected: $cloudUrl');
+    return _ServerDetectionResult(url: cloudUrl, isOnline: true);
+  }
+
+  // ── 4. Cloud not reachable within 3 s — retry with a longer timeout for slow 4G ──
+  try {
+    if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 5))) {
+      debugPrint('[ServerConfig] Cloud detected (slow 4G): $cloudUrl');
+      return _ServerDetectionResult(url: cloudUrl, isOnline: true);
+    }
+  } catch (_) {}
+
+  // ── 5. HTTP:5501 last resort (port may be blocked on mobile networks) ──
+  try {
+    if (await _pingWithStrictTimeout(httpFallback, const Duration(seconds: 5))) {
+      debugPrint('[ServerConfig] Cloud HTTP fallback detected: $httpFallback');
+      return _ServerDetectionResult(url: httpFallback, isOnline: true);
+    }
+  } catch (_) {}
+
+  // ── 6. Nothing found ──
   debugPrint('[ServerConfig] No server detected. Falling back to default hotspot URL.');
   return _ServerDetectionResult(url: 'http://192.168.137.1:5501', isOnline: false);
 }
@@ -127,6 +148,7 @@ class ServerConfig {
   String? _detectedUrl;
   bool _hasDetected = false;
   bool _isOnline = false;
+  bool _isHybrid = false;
 
   /// The emulator host URL generated at runtime.
   String get emulatorUrl =>
@@ -146,6 +168,9 @@ class ServerConfig {
 
   /// True if connected to the cloud, false if connected to local Intranet.
   bool get isOnline => _isOnline;
+
+  /// True when both a local server and the cloud are reachable (VLAN + internet).
+  bool get isHybrid => _isHybrid;
 
   /// The full base URL for API calls.
   String get baseUrl => _detectedUrl ?? hotspotUrl;
@@ -195,7 +220,8 @@ class ServerConfig {
 
       if (result.url != null) {
         _detectedUrl = result.url;
-        _isOnline = result.isOnline;
+        _isOnline    = result.isOnline;
+        _isHybrid    = result.isHybrid;
         _hasDetected = true;
         debugPrint(
           '[ServerConfig] Server detection complete. '
@@ -220,7 +246,8 @@ class ServerConfig {
   void reset() {
     _hasDetected = false;
     _detectedUrl = null;
-    _isOnline = false;
+    _isOnline    = false;
+    _isHybrid    = false;
   }
 }
 

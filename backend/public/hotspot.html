@@ -446,12 +446,16 @@ class FacePhotoManager {
                 'face-api.js failed to load. Run "node setup.js" on the server PC then restart.'
             );
         }
-        this.setProgress('Loading face detection model (1/3)...');
+        this.setProgress('Loading face detection model (1/5)…');
         await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
-        this.setProgress('Loading landmark model (2/3)...');
+        this.setProgress('Loading landmark model (2/5)…');
         await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
-        this.setProgress('Loading recognition model (3/3)...');
+        this.setProgress('Loading recognition model (3/5)…');
         await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+        this.setProgress('Loading age & gender model (4/5)…');
+        await faceapi.nets.ageGenderNet.loadFromUri('/models');
+        this.setProgress('Loading expression model (5/5)…');
+        await faceapi.nets.faceExpressionNet.loadFromUri('/models');
         this.modelsLoaded = true;
         this.setProgress('');
 
@@ -510,13 +514,15 @@ class FacePhotoManager {
         // Release camera — no need to hold it open after capture
         this._stopStream();
 
-        // Run face-api on the captured canvas
+        // Run full face-api pipeline on the captured canvas
         this.setStatus('Analysing photo…');
         const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
         const detection = await faceapi
             .detectSingleFace(canvas, options)
             .withFaceLandmarks()
-            .withFaceDescriptor();
+            .withFaceDescriptor()
+            .withAgeAndGender()
+            .withFaceExpressions();
 
         if (!detection) {
             this.setStatus('No face detected — try again, facing the camera directly.');
@@ -525,9 +531,13 @@ class FacePhotoManager {
             return;
         }
 
-        this.descriptor = Array.from(detection.descriptor);
-        this.setStatus('Face captured — checking with server…');
-        this.onCaptured(this.descriptor);
+        const biometrics = this._extractBiometrics(detection);
+        this.descriptor  = biometrics.descriptor;
+        this.setStatus(
+            `Face captured — ~${biometrics.age} yr · ${biometrics.gender} · ` +
+            `${biometrics.dominantExpression} (${(biometrics.expressionScore * 100).toFixed(0)}%) ✓ Checking…`
+        );
+        this.onCaptured(biometrics);
     }
 
     /* ── File-input mode (mobile / HTTP) ── */
@@ -547,7 +557,9 @@ class FacePhotoManager {
         const detection = await faceapi
             .detectSingleFace(this.previewEl, options)
             .withFaceLandmarks()
-            .withFaceDescriptor();
+            .withFaceDescriptor()
+            .withAgeAndGender()
+            .withFaceExpressions();
         URL.revokeObjectURL(imgUrl);
 
         if (!detection) {
@@ -557,12 +569,46 @@ class FacePhotoManager {
             return;
         }
 
-        this.descriptor = Array.from(detection.descriptor);
-        this.setStatus('Face captured — checking with server...');
-        this.onCaptured(this.descriptor);
+        const biometrics = this._extractBiometrics(detection);
+        this.descriptor  = biometrics.descriptor;
+        this.setStatus(
+            `Face captured — ~${biometrics.age} yr · ${biometrics.gender} · ` +
+            `${biometrics.dominantExpression} (${(biometrics.expressionScore * 100).toFixed(0)}%) ✓ Checking…`
+        );
+        this.onCaptured(biometrics);
     }
 
     /* ── Shared ── */
+
+    // Build a rich biometric profile from a full face-api detection result.
+    _extractBiometrics(detection) {
+        const expEntries = Object.entries(detection.expressions);
+        const dominant   = expEntries.reduce((a, b) => a[1] > b[1] ? a : b);
+        const box        = detection.detection.box;
+        return {
+            // Identity vector (128-dim) — used for uniqueness check
+            descriptor:         Array.from(detection.descriptor),
+            // Age & gender
+            age:                Math.round(detection.age),
+            gender:             detection.gender,
+            genderProbability:  parseFloat(detection.genderProbability.toFixed(3)),
+            // Expressions
+            dominantExpression: dominant[0],
+            expressionScore:    parseFloat(dominant[1].toFixed(3)),
+            expressions: Object.fromEntries(
+                expEntries.map(([k, v]) => [k, parseFloat(v.toFixed(3))])
+            ),
+            // Detection quality
+            detectionScore: parseFloat(detection.detection.score.toFixed(3)),
+            // Face bounding box (pixels in the original image)
+            faceBox: {
+                x:      Math.round(box.x),
+                y:      Math.round(box.y),
+                width:  Math.round(box.width),
+                height: Math.round(box.height),
+            },
+        };
+    }
 
     triggerCapture() {
         if (!this.modelsLoaded) { this.setStatus('Models still loading, please wait...'); return; }
@@ -597,6 +643,7 @@ class AttendanceRegistrationApp {
         this.validatedSession = null;
         this.currentPin       = '';
         this.faceDescriptor   = null;
+        this.faceBiometrics   = null;  // full biometric profile (age, gender, expressions, box, score)
         this.faceId           = null;  // one-time token issued by /api/verify-face
         this.faceManager      = null;
         this.currentStep      = 0;
@@ -670,7 +717,57 @@ class AttendanceRegistrationApp {
         });
     }
 
+    /* ── Restore a previous registration from localStorage ── */
+
+    _tryRestoreRegistration() {
+        let state;
+        try {
+            const raw = localStorage.getItem('owhas_reg');
+            if (!raw) return false;
+            state = JSON.parse(raw);
+        } catch (_) { return false; }
+
+        // Expire after 24 hours
+        if (!state.savedAt || Date.now() - state.savedAt > 86_400_000) {
+            localStorage.removeItem('owhas_reg');
+            return false;
+        }
+
+        // If the page URL carries a session token it must match the stored one
+        if (this.sessionToken && state.sessionToken !== this.sessionToken) {
+            localStorage.removeItem('owhas_reg');
+            return false;
+        }
+
+        // Rebuild just enough context for _showRegisteredState / _startHeartbeat
+        this.validatedSession = { courseName: state.courseName, courseCode: state.courseCode };
+        this.currentPin       = state.pin || '';
+
+        this._showRegisteredState(state.name);
+
+        if (state.heartbeatToken) {
+            this._startHeartbeat({
+                token:        state.heartbeatToken,
+                intervalMs:   state.intervalMs,
+                matricule:    state.matricule,
+                pin:          state.pin,
+                sessionToken: state.sessionToken,
+                name:         state.name,
+            });
+        } else {
+            // Non-heartbeat session — show persistent status message
+            this.el.statusPanel.className = 'info-panel heartbeat';
+            this.el.statusContent.innerHTML =
+                `<span class="heartbeat-dot"></span>` +
+                `<strong>${state.name}</strong> — Registered ✓  Keep this page open. ` +
+                `Your location is confirmed every ${HEARTBEAT_INTERVAL_MINUTES} min to verify attendance.`;
+        }
+
+        return true;
+    }
+
     async _initApp() {
+        if (this._tryRestoreRegistration()) return;   // already registered — skip all steps
         await this._checkServer();
         if (this.sessionToken) await this._handleTokenMode();
     }
@@ -779,12 +876,13 @@ class AttendanceRegistrationApp {
         setTimeout(() => { this.el.captureBtn.disabled = false; }, 1500);
     }
 
-    async _onFaceCaptured(descriptor) {
+    async _onFaceCaptured(biometrics) {
         this.el.captureBtn.disabled = true;
-        this._status('Checking face against session...', 'info');
+        this._status('Checking face against session…', 'info');
 
         try {
-            const body = { descriptor };
+            // Only the 128-dim descriptor is needed for the uniqueness check
+            const body = { descriptor: biometrics.descriptor };
             if (this.currentPin)   body.pin          = this.currentPin;
             if (this.sessionToken) body.sessionToken = this.sessionToken;
 
@@ -810,10 +908,15 @@ class AttendanceRegistrationApp {
                 return;
             }
 
-            this.faceDescriptor = descriptor;
-            this.faceId         = result.faceId;  // one-time server token (valid 5 min)
+            this.faceDescriptor = biometrics.descriptor;
+            this.faceBiometrics = biometrics;          // full profile stored for registration step
+            this.faceId         = result.faceId;       // one-time server token (valid 5 min)
             this.faceManager.stop();
-            this._status('Face verified ✓ — fill in your details.', 'success');
+            this._status(
+                `Face verified ✓  ~${biometrics.age} yr · ${biometrics.gender} · ` +
+                `${biometrics.dominantExpression} — fill in your details.`,
+                'success'
+            );
             this._goToStep(2);
 
         } catch (e) {
@@ -867,7 +970,10 @@ class AttendanceRegistrationApp {
         }
 
         // Attach the one-time face token issued by /api/verify-face
-        if (this.faceId) payload.faceId = this.faceId;
+        if (this.faceId)        payload.faceId        = this.faceId;
+
+        // Full biometric profile (age, gender, expressions, detection quality, box)
+        if (this.faceBiometrics) payload.faceBiometrics = this.faceBiometrics;
 
         // Session credentials
         if (this.sessionToken) payload.sessionToken = this.sessionToken;
@@ -885,7 +991,13 @@ class AttendanceRegistrationApp {
             const data = await r.json();
             const msg  = data.message || 'Registration successful';
             if (data.heartbeatToken) {
-                // Online session — start GPS keep-alive loop
+                // Online session — persist state then start GPS keep-alive loop
+                this._saveRegistrationState({
+                    name:          payload.username,
+                    heartbeatToken: data.heartbeatToken,
+                    intervalMs:    data.heartbeatIntervalMs || HEARTBEAT_INTERVAL_MINUTES * 60 * 1000,
+                    matricule:     payload.matricule,
+                });
                 this._startHeartbeat({
                     token:        data.heartbeatToken,
                     intervalMs:   data.heartbeatIntervalMs || HEARTBEAT_INTERVAL_MINUTES * 60 * 1000,
@@ -895,7 +1007,8 @@ class AttendanceRegistrationApp {
                     name:         payload.username,
                 });
             } else {
-                // Offline/local session — show success state and a simple status
+                // Offline/local session — persist state then show success
+                this._saveRegistrationState({ name: payload.username, matricule: payload.matricule });
                 this._showRegisteredState(payload.username);
                 this._status(`✓ ${msg}`, 'success');
             }
@@ -926,6 +1039,24 @@ class AttendanceRegistrationApp {
 
         // Mark all stepper pills as done
         this.el.pills.forEach(pill => { pill.className = 'step-pill done'; });
+    }
+
+    /* ── Persist registration to localStorage (survives page reload) ── */
+
+    _saveRegistrationState({ name, heartbeatToken = null, intervalMs = null, matricule = null }) {
+        try {
+            localStorage.setItem('owhas_reg', JSON.stringify({
+                name,
+                courseName:    this.validatedSession?.courseName  || '',
+                courseCode:    this.validatedSession?.courseCode   || '',
+                heartbeatToken,
+                intervalMs:    intervalMs || HEARTBEAT_INTERVAL_MINUTES * 60 * 1000,
+                matricule:     matricule  || '',
+                pin:           this.currentPin   || null,
+                sessionToken:  this.sessionToken || null,
+                savedAt:       Date.now(),
+            }));
+        } catch (_) {}
     }
 
     /* ── GPS heartbeat (online sessions only) ── */
@@ -981,9 +1112,10 @@ class AttendanceRegistrationApp {
             });
 
             if (r.status === 403) {
-                // Out of range or already frozen — stop the loop and warn the student
+                // Out of range or already frozen — stop the loop, clear saved state, warn student
                 clearInterval(this._heartbeatTimer);
                 this._heartbeatTimer = null;
+                try { localStorage.removeItem('owhas_reg'); } catch (_) {}
                 const data = await r.json().catch(() => ({}));
                 this._status(`⚠ ${data.error || 'Attendance frozen — you may have left the classroom.'}`, 'warning');
             }
@@ -1001,8 +1133,8 @@ class AttendanceRegistrationApp {
         if (this.currentStep === 1 && step !== 1 && this.faceManager) {
             this.faceManager.stop(); this.faceManager = null;
         }
-        // Going back to PIN step: discard face token so it can't be reused
-        if (step === 0) { this.faceId = null; this.faceDescriptor = null; }
+        // Going back to PIN step: discard all face data so it can't be reused
+        if (step === 0) { this.faceId = null; this.faceDescriptor = null; this.faceBiometrics = null; }
 
         this.currentStep = step;
 
@@ -1100,6 +1232,7 @@ class AttendanceRegistrationApp {
         this.el.matricule.value = '';
         this.el.email.value     = '';
         this.faceDescriptor = null;
+        this.faceBiometrics = null;
         this.faceId         = null;  // invalidate the used token
     }
 

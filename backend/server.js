@@ -530,7 +530,7 @@ app.post('/api/verify-face', (req, res) => {
 // re-checks uniqueness to close the race-condition window, then commits
 // the student to the session permanently.
 app.post('/api/biometric-connect', (req, res) => {
-    const { username, matricule, email, sessionPin, sessionToken, faceId, latitude, longitude } = req.body;
+    const { username, matricule, email, sessionPin, sessionToken, faceId, latitude, longitude, faceBiometrics } = req.body;
     const studentIP = req.headers['x-forwarded-for'] || req.ip || req.socket.remoteAddress;
 
     if (!username || !matricule || !email)
@@ -602,6 +602,21 @@ app.post('/api/biometric-connect', (req, res) => {
         registeredAt: connectedAt,
     });
 
+    // Sanitise and validate the optional biometric profile sent by the browser
+    let bio = null;
+    if (faceBiometrics && typeof faceBiometrics === 'object') {
+        bio = {
+            age:                (Number.isFinite(faceBiometrics.age))               ? faceBiometrics.age               : null,
+            gender:             (typeof faceBiometrics.gender === 'string')          ? faceBiometrics.gender             : null,
+            genderProbability:  (Number.isFinite(faceBiometrics.genderProbability)) ? faceBiometrics.genderProbability  : null,
+            dominantExpression: (typeof faceBiometrics.dominantExpression === 'string') ? faceBiometrics.dominantExpression : null,
+            expressionScore:    (Number.isFinite(faceBiometrics.expressionScore))   ? faceBiometrics.expressionScore    : null,
+            expressions:        (faceBiometrics.expressions && typeof faceBiometrics.expressions === 'object') ? faceBiometrics.expressions : null,
+            detectionScore:     (Number.isFinite(faceBiometrics.detectionScore))    ? faceBiometrics.detectionScore     : null,
+            faceBox:            (faceBiometrics.faceBox && typeof faceBiometrics.faceBox === 'object') ? faceBiometrics.faceBox : null,
+        };
+    }
+
     session.attendees.push({
         username,
         matricule,
@@ -610,6 +625,8 @@ app.post('/api/biometric-connect', (req, res) => {
         faceId,
         faceVerified:     true,
         connectedAt,
+        // Rich biometric profile captured at registration time
+        ...(bio && { biometrics: bio }),
         // lastSeen and heartbeat fields are only present for online sessions
         ...(isOnlineSession && {
             lastSeen:         connectedAt,   // updated by each GPS heartbeat

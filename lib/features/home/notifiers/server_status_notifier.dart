@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import '../../../services/server_config.dart';
 import '../../../services/api_service.dart';
 
-enum ServerConnectionStatus { checking, cloud, wifi, none }
+enum ServerConnectionStatus { checking, cloud, wifi, hybrid, none }
 
 class ServerStatusNotifier extends ChangeNotifier {
   ServerConnectionStatus _status    = ServerConnectionStatus.checking;
@@ -27,12 +27,16 @@ class ServerStatusNotifier extends ChangeNotifier {
   Future<void> _updateStatus() async {
     _serverUrl = ServerConfig().baseUrl;
 
-    // 1. Try the URL that detection resolved (local hotspot or cloud).
+    // 1. Try the URL that detection resolved (local hotspot, cloud, or hybrid).
+    //    ServerConfig already probed both local and cloud in parallel during
+    //    detect(), so we just read the pre-computed flags — no extra round-trip.
     try {
       await ApiService().pingServer();
-      _status = ServerConfig().isOnline
-          ? ServerConnectionStatus.cloud
-          : ServerConnectionStatus.wifi;
+      _status = ServerConfig().isHybrid
+          ? ServerConnectionStatus.hybrid
+          : ServerConfig().isOnline
+              ? ServerConnectionStatus.cloud
+              : ServerConnectionStatus.wifi;
       notifyListeners();
       return;
     } catch (_) {}
