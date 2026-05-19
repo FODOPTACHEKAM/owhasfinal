@@ -223,7 +223,8 @@
             margin-bottom:1rem;box-shadow:0 4px 16px rgba(16,185,129,.4);
         }
         .reg-success-name{font-size:1.35rem;font-weight:700;color:var(--gray-900);margin-bottom:.3rem}
-        .reg-success-course{font-size:.85rem;color:var(--gray-500);margin-bottom:.5rem}
+        .reg-success-course{font-size:.85rem;color:var(--gray-500);margin-bottom:.4rem}
+        .reg-success-status{font-size:.88rem;font-weight:600;color:var(--success);margin-bottom:.4rem;min-height:1.2rem}
         .reg-success-label{font-size:.75rem;color:var(--gray-400)}
 
         @media(max-width:640px){
@@ -276,6 +277,19 @@
                 <span class="form-error" id="pinError"></span>
             </div>
 
+            <!-- Projector code gate — shown only when lecturer activates a room code -->
+            <div class="form-group" id="projectorCodeGroup" style="display:none">
+                <label for="projectorCode">
+                    Room Code <span class="required">*</span>
+                    <span style="font-size:.7rem;color:var(--gray-500);font-weight:400;margin-left:4px">shown on projector</span>
+                </label>
+                <input type="text" id="projectorCode" class="form-input"
+                    placeholder="6-digit code" maxlength="6"
+                    inputmode="numeric" autocomplete="off">
+                <span class="form-help">Enter the 6-digit code displayed on the classroom projector</span>
+                <span class="form-error" id="projectorCodeError"></span>
+            </div>
+
             <button class="button-primary" id="verifyPinBtn" type="button">
                 <span>Verify PIN</span>
             </button>
@@ -305,6 +319,8 @@
                 <canvas id="webcamCanvas" style="display:none;position:absolute;pointer-events:none"></canvas>
                 <img id="facePreview" alt="Captured photo"
                      style="display:none;width:100%;height:100%;object-fit:cover;border-radius:inherit">
+                <div class="face-oval"></div>
+                <div class="face-oval-ring" id="faceOvalRing"></div>
                 <div class="face-status" id="faceStatus">Loading face models…</div>
             </div>
 
@@ -380,6 +396,7 @@
                 <div class="reg-success-icon">✓</div>
                 <div class="reg-success-name" id="successName">Registered!</div>
                 <div class="reg-success-course" id="successCourse"></div>
+                <div class="reg-success-status" id="successStatus"></div>
                 <div class="reg-success-label">Keep this page open to confirm attendance.</div>
             </div>
         </section>
@@ -409,7 +426,7 @@
 //  This constant is only used if the server response omits that field.
 //  To change the interval, edit HEARTBEAT_INTERVAL_MINUTES in server.js.
 // ══════════════════════════════════════════════════════════════════
-const HEARTBEAT_INTERVAL_MINUTES = 2;   // ← keep in sync with server.js
+const HEARTBEAT_INTERVAL_MINUTES = 5;   // ← keep in sync with server.js
 
 /* ════════════════════════════════════════════════════════════
    FacePhotoManager — dual-mode capture
@@ -431,10 +448,11 @@ class FacePhotoManager {
         this.videoEl       = videoEl;
         this.canvasEl      = canvasEl;
         this.onCaptured    = onCaptured || (() => {});
-        this.descriptor    = null;
-        this.modelsLoaded  = false;
-        this.useWebcam     = false;
-        this.stream        = null;
+        this.descriptor          = null;
+        this.capturedImageBase64 = null;  // base64 JPEG for server-side liveness check
+        this.modelsLoaded        = false;
+        this.useWebcam           = false;
+        this.stream              = null;
     }
 
     setStatus(msg)  { if (this.statusEl)   this.statusEl.textContent   = msg; }
@@ -505,8 +523,11 @@ class FacePhotoManager {
         canvas.height = video.videoHeight || 480;
         canvas.getContext('2d').drawImage(video, 0, 0);
 
+        // Store base64 for server-side liveness check (0.7 quality keeps payload small)
+        this.capturedImageBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
         // Show the frozen frame in the preview image
-        this.previewEl.src          = canvas.toDataURL('image/jpeg', 0.92);
+        this.previewEl.src          = this.capturedImageBase64;
         this.previewEl.style.display = 'block';
         this.videoEl.style.display   = 'none';
         if (this.placeholderEl) this.placeholderEl.style.display = 'none';
@@ -525,9 +546,10 @@ class FacePhotoManager {
             .withFaceExpressions();
 
         if (!detection) {
-            this.setStatus('No face detected — try again, facing the camera directly.');
+            this.setStatus('No face detected — face the camera directly in good light.');
             this.previewEl.style.display = 'none';
-            await this._startWebcam(); // restart webcam for retry
+            this.capturedImageBase64 = null;
+            await this._startWebcam();
             return;
         }
 
@@ -547,8 +569,14 @@ class FacePhotoManager {
         if (!file) return;
         this.setStatus('Analysing photo...');
 
-        const imgUrl = URL.createObjectURL(file);
-        this.previewEl.src = imgUrl;
+        // Convert file to base64 for server-side liveness check
+        this.capturedImageBase64 = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(e.target.result);
+            reader.readAsDataURL(file);
+        });
+
+        this.previewEl.src = this.capturedImageBase64;
         this.previewEl.style.display = 'block';
         if (this.placeholderEl) this.placeholderEl.style.display = 'none';
         await new Promise(res => { this.previewEl.onload = res; });
@@ -563,8 +591,9 @@ class FacePhotoManager {
         URL.revokeObjectURL(imgUrl);
 
         if (!detection) {
-            this.setStatus('No face detected. Retake the photo — look directly at the camera.');
+            this.setStatus('No face detected — look directly at the camera in good light.');
             this.previewEl.style.display = 'none';
+            this.capturedImageBase64 = null;
             if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
             return;
         }
@@ -661,21 +690,26 @@ class AttendanceRegistrationApp {
             pills: [0,1,2].map(i => document.getElementById(`pill-${i}`)),
 
             // Step 0 – PIN
-            pinSection:   document.getElementById('pinSection'),
-            sessionPin:   document.getElementById('sessionPin'),
-            verifyPinBtn: document.getElementById('verifyPinBtn'),
-            pinError:     document.getElementById('pinError'),
+            pinSection:          document.getElementById('pinSection'),
+            sessionPin:          document.getElementById('sessionPin'),
+            verifyPinBtn:        document.getElementById('verifyPinBtn'),
+            pinError:            document.getElementById('pinError'),
+            projectorCodeGroup:  document.getElementById('projectorCodeGroup'),
+            projectorCode:       document.getElementById('projectorCode'),
+            projectorCodeError:  document.getElementById('projectorCodeError'),
 
             // Step 1 – Face
-            faceSection:  document.getElementById('faceSection'),
-            faceInput:    document.getElementById('faceInput'),
-            facePreview:  document.getElementById('facePreview'),
+            faceSection:     document.getElementById('faceSection'),
+            faceInput:       document.getElementById('faceInput'),
+            facePreview:     document.getElementById('facePreview'),
             facePlaceholder: document.getElementById('facePlaceholder'),
-            webcamVideo:  document.getElementById('webcamVideo'),
-            webcamCanvas: document.getElementById('webcamCanvas'),
-            modelProgress:document.getElementById('modelProgress'),
-            captureBtn:   document.getElementById('captureBtn'),
-            backToPinBtn: document.getElementById('backToPinBtn'),
+            faceStatus:      document.getElementById('faceStatus'),
+            faceOvalRing:    document.getElementById('faceOvalRing'),
+            webcamVideo:     document.getElementById('webcamVideo'),
+            webcamCanvas:    document.getElementById('webcamCanvas'),
+            modelProgress:   document.getElementById('modelProgress'),
+            captureBtn:      document.getElementById('captureBtn'),
+            backToPinBtn:    document.getElementById('backToPinBtn'),
 
             // Step 2 – Form
             registrationSection: document.getElementById('registrationSection'),
@@ -691,6 +725,7 @@ class AttendanceRegistrationApp {
             successSection: document.getElementById('successSection'),
             successName:    document.getElementById('successName'),
             successCourse:  document.getElementById('successCourse'),
+            successStatus:  document.getElementById('successStatus'),
 
             // Status
             statusPanel:   document.getElementById('statusPanel'),
@@ -796,24 +831,38 @@ class AttendanceRegistrationApp {
     /* ── Step 0: PIN verification ── */
 
     async _handleVerifyPin() {
-        // Strip and re-validate in case the input listener was bypassed (paste, autofill)
         const pin = this.el.sessionPin.value.replace(/\D/g, '').slice(0, 4);
         this.el.sessionPin.value = pin;
         this.el.pinError.textContent = '';
+        if (this.el.projectorCodeError) this.el.projectorCodeError.textContent = '';
 
         if (pin.length !== 4) {
             this.el.pinError.textContent = `Enter a valid 4-digit PIN (got ${pin.length} digit${pin.length === 1 ? '' : 's'})`;
             return;
         }
 
-        this._status(`Sending PIN to ${this.origin}/api/validate-pin …`, 'info');
+        // Collect projector code if the field is visible
+        const projectorCodeVisible = this.el.projectorCodeGroup?.style.display !== 'none';
+        const projectorCode = projectorCodeVisible
+            ? (this.el.projectorCode?.value.replace(/\D/g, '').trim() || '')
+            : '';
+
+        if (projectorCodeVisible && projectorCode.length !== 6) {
+            if (this.el.projectorCodeError) this.el.projectorCodeError.textContent = 'Enter the full 6-digit room code.';
+            return;
+        }
+
+        this._status('Verifying PIN…', 'info');
         this._btnLoading(this.el.verifyPinBtn, true, 'verifyPin');
 
         try {
+            const body = { pin };
+            if (projectorCode) body.projectorCode = projectorCode;
+
             const r = await fetch('/api/validate-pin', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pin }),
+                body: JSON.stringify(body),
             });
 
             if (r.ok) {
@@ -822,17 +871,23 @@ class AttendanceRegistrationApp {
                 this._status('PIN verified ✓ — preparing face recognition…', 'success');
                 this._goToStep(1);
             } else {
-                const msg = await r.text();
-                this.el.pinError.textContent = 'Invalid or expired PIN';
-                this._status(`PIN rejected by server (HTTP ${r.status}): ${msg}`, 'error');
+                const data = await r.json().catch(() => ({}));
+                if (data.error === 'projectorCodeRequired') {
+                    // Show the projector code field and ask the student to fill it
+                    if (this.el.projectorCodeGroup) this.el.projectorCodeGroup.style.display = 'block';
+                    if (this.el.projectorCode) this.el.projectorCode.focus();
+                    this._status(data.message || 'Enter the room code shown on the projector.', 'warning');
+                } else if (data.error === 'wrongProjectorCode') {
+                    if (this.el.projectorCodeError) this.el.projectorCodeError.textContent = data.message || 'Wrong room code.';
+                    this._status(data.message || 'Wrong room code — check the projector.', 'error');
+                } else {
+                    this.el.pinError.textContent = 'Invalid or expired PIN';
+                    this._status('PIN not recognised. Check the PIN and try again.', 'error');
+                }
             }
         } catch (e) {
-            this.el.pinError.textContent = 'Connection error — check you are on the hotspot.';
-            this._status(
-                `POST ${this.origin}/api/validate-pin failed: ${e.message}. ` +
-                `Ensure phone is on the lecturer's Wi-Fi and server is running.`,
-                'error'
-            );
+            this.el.pinError.textContent = 'Connection error — check you are on the school Wi-Fi.';
+            this._status(`Could not reach server: ${e.message}`, 'error');
         } finally {
             this._btnLoading(this.el.verifyPinBtn, false, 'verifyPin');
         }
@@ -850,7 +905,7 @@ class AttendanceRegistrationApp {
         if (this.el.facePlaceholder) this.el.facePlaceholder.style.display = 'flex';
 
         this.faceManager = new FacePhotoManager({
-            statusEl:      this.el.faceStatus,
+            statusEl:      this.el.faceStatus,   // overlay inside the camera preview
             progressEl:    this.el.modelProgress,
             previewEl:     this.el.facePreview,
             placeholderEl: this.el.facePlaceholder,
@@ -881,10 +936,11 @@ class AttendanceRegistrationApp {
         this._status('Checking face against session…', 'info');
 
         try {
-            // Only the 128-dim descriptor is needed for the uniqueness check
             const body = { descriptor: biometrics.descriptor };
             if (this.currentPin)   body.pin          = this.currentPin;
             if (this.sessionToken) body.sessionToken = this.sessionToken;
+            // Include the image for server-side liveness check (graceful fallback if missing)
+            if (this.faceManager?.capturedImageBase64) body.image = this.faceManager.capturedImageBase64;
 
             const r = await fetch('/api/verify-face', {
                 method: 'POST',
@@ -1061,6 +1117,11 @@ class AttendanceRegistrationApp {
             this.el.successCourse.textContent =
                 session.courseName + (session.courseCode ? ` · ${session.courseCode}` : '');
         }
+        // Status line: student name + timestamp
+        if (this.el.successStatus) {
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            this.el.successStatus.textContent = `${name} — Attendance recorded at ${time} ✓`;
+        }
 
         // Mark all stepper pills as done (inline style + class)
         this.el.pills.forEach(pill => {
@@ -1116,23 +1177,22 @@ class AttendanceRegistrationApp {
         this.el.statusContent.innerHTML =
             `<span class="heartbeat-dot"></span>` +
             `<strong>${name || 'You'}</strong> — attendance active. ` +
-            `Location confirmed every ${intervalMinutes} min. Keep this page open.`;
+            `Presence confirmed every ${intervalMinutes} min. Keep this page open.`;
     }
 
     async _sendHeartbeat() {
         if (!this._heartbeatData) return;
         try {
-            const pos = await this._getLocation();
-            if (!pos) return; // GPS unavailable this cycle — skip silently
+            const pos = await this._getLocation(); // null when GPS unavailable (VLAN mode)
 
             const body = {
                 token:     this._heartbeatData.token,
                 matricule: this._heartbeatData.matricule,
-                lat:       pos.coords.latitude,
-                lng:       pos.coords.longitude,
             };
             if (this._heartbeatData.pin)          body.pin          = this._heartbeatData.pin;
             if (this._heartbeatData.sessionToken) body.sessionToken = this._heartbeatData.sessionToken;
+            // GPS coordinates included only when available (online/GPS sessions)
+            if (pos) { body.lat = pos.coords.latitude; body.lng = pos.coords.longitude; }
 
             const r = await fetch('/api/heartbeat', {
                 method:  'POST',

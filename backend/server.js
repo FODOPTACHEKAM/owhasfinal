@@ -54,8 +54,8 @@ const PORT = 5501; // same port for both HTTP and HTTPS
 //      Set to 0 to freeze on the very first missed beat.
 //      Recommended: 1
 // ══════════════════════════════════════════════════════════════════
-const HEARTBEAT_INTERVAL_MINUTES = 2;   // ← edit this to change check frequency
-const HEARTBEAT_GRACE_PERIODS    = 1;   // ← edit this to change missed-beat tolerance
+const HEARTBEAT_INTERVAL_MINUTES = 5;   // ← edit this to change check frequency
+const HEARTBEAT_GRACE_PERIODS    = 2;   // ← edit this to change missed-beat tolerance
 
 // ══════════════════════════════════════════════════════════════════
 //  DEPLOYMENT MODE — Hotspot  vs.  University VLAN
@@ -73,6 +73,10 @@ const HEARTBEAT_GRACE_PERIODS    = 1;   // ← edit this to change missed-beat t
 //  To switch modes: change this one constant and restart the server.
 // ══════════════════════════════════════════════════════════════════
 const SERVER_IP = null;   // ← set to e.g. '10.50.1.5' for university VLAN
+
+// VLAN mode flag: true when running on the school network.
+// Used to issue heartbeat tokens for sessions that have no GPS target.
+const isVlanMode = SERVER_IP !== null;
 
 
 
@@ -113,8 +117,9 @@ app.use((req, res, next) => {
 });
 
 // ====== SECURITY: Payload Limits ======
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// 2 MB to accommodate base64-encoded face images sent by the browser for liveness check
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // ====== Static files ======
 app.use('/public', express.static(path.join(__dirname, 'public'), {
@@ -214,6 +219,38 @@ function faceDistance(a, b) {
     return Math.sqrt(a.reduce((sum, val, i) => sum + Math.pow(val - b[i], 2), 0));
 }
 
+// ── Call the Python face liveness microservice on localhost:5600 ──────────────
+// Returns the parsed JSON response, or null if the service is unreachable.
+// A null return is treated as a graceful fallback — registration continues
+// without liveness enforcement rather than blocking all students if the
+// Python service is not running.
+function _callFaceService(imageBase64) {
+    return new Promise((resolve) => {
+        const body = JSON.stringify({ image: imageBase64 });
+        const options = {
+            hostname: '127.0.0.1',
+            port: 5600,
+            path: '/verify',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+            },
+        };
+        const req = http.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => { data += chunk; });
+            res.on('end', () => {
+                try { resolve(JSON.parse(data)); } catch (_) { resolve(null); }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(2000, () => { req.destroy(); resolve(null); });
+        req.write(body);
+        req.end();
+    });
+}
+
 // Resolve session from PIN or session token
 function getSessionByPinOrToken(pin, token) {
     if (pin) return getSessionByPin(pin);
@@ -276,6 +313,10 @@ app.post('/api/session-init', (req, res) => {
         pendingFaces:    new Map(), // faceId → { descriptor, reservedAt, used }
         createdAt: new Date(),
         expiresAt: expiresAt,
+        // Two-factor registration gate (VLAN presence check)
+        projectorCode:     null,          // active 6-digit code; null = gate inactive
+        projectorCodeAt:   null,          // ISO timestamp of last rotation
+        projectorWindowMs: 3 * 60 * 1000, // code valid for 3 minutes
     });
 
     const geoLog = targetLocation ? `(GPS: ${targetLocation.latitude}, ${targetLocation.longitude})` : '(No GPS)';
@@ -300,13 +341,57 @@ app.get('/api/session-info', (req, res) => {
     });
 });
 
+// ====== POST /api/set-projector-code ======
+// Called by the Flutter dashboard to activate the two-factor registration gate.
+// Generates a new 6-digit code and starts a 3-minute validity window.
+app.post('/api/set-projector-code', (req, res) => {
+    const { pin } = req.body;
+    const session = getSessionByPin(pin);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const code = String(100000 + Math.floor(Math.random() * 900000));
+    session.projectorCode   = code;
+    session.projectorCodeAt = new Date().toISOString();
+    console.log(`[PROJECTOR] PIN ${pin}: new room code ${code} (valid ${session.projectorWindowMs / 60000} min)`);
+    res.json({ ok: true, code, rotatedAt: session.projectorCodeAt, windowMs: session.projectorWindowMs });
+});
+
+// ====== GET /api/projector-code-active?pin= ======
+// Browser polls this to know whether to show the projector code field.
+app.get('/api/projector-code-active', (req, res) => {
+    const session = getSessionByPin(req.query.pin);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (!session.projectorCode) return res.json({ active: false });
+    const age = Date.now() - new Date(session.projectorCodeAt).getTime();
+    res.json({ active: age < session.projectorWindowMs });
+});
+
 // ====== POST /api/validate-pin ======
 app.post('/api/validate-pin', (req, res) => {
-    const { pin } = req.body;
+    const { pin, projectorCode } = req.body;
     const session = getSessionByPin(pin);
     if (!session) {
         return res.status(404).json({ error: 'Invalid or expired PIN' });
     }
+
+    // Two-factor gate: if a projector code is active, the student must provide it.
+    if (session.projectorCode) {
+        const age = Date.now() - new Date(session.projectorCodeAt).getTime();
+        if (age < session.projectorWindowMs) {
+            if (!projectorCode) {
+                return res.status(403).json({
+                    error: 'projectorCodeRequired',
+                    message: 'Enter the room code shown on the projector.',
+                });
+            }
+            if (projectorCode !== session.projectorCode) {
+                return res.status(403).json({
+                    error: 'wrongProjectorCode',
+                    message: 'Wrong room code — check the classroom projector.',
+                });
+            }
+        }
+    }
+
     res.json({
         valid: true,
         courseName: session.courseName,
@@ -509,16 +594,30 @@ app.get('/connect', (req, res) => {
 
 // ====== POST /api/verify-face ======
 // Step 1 of 2 for student registration.
-// Compares the submitted 128-dim descriptor against every face already stored
-// in the session. If unique, generates a one-time faceId token (valid 5 min)
-// and returns it to the client. The token must be presented at /api/biometric-connect.
-app.post('/api/verify-face', (req, res) => {
-    const { pin, sessionToken, descriptor } = req.body;
+// Optional: accepts a base64 image for server-side liveness analysis via the
+// Python microservice. If the image is provided and liveness fails, the request
+// is rejected before the descriptor uniqueness check runs.
+// If the Python service is unavailable, the liveness check is skipped gracefully.
+app.post('/api/verify-face', async (req, res) => {
+    const { pin, sessionToken, descriptor, image } = req.body;
     const session = getSessionByPinOrToken(pin, sessionToken);
     if (!session) return res.status(404).json({ error: 'Session not found or expired' });
 
     if (!Array.isArray(descriptor) || descriptor.length !== 128) {
         return res.status(400).json({ error: 'descriptor must be a 128-element numeric array' });
+    }
+
+    // Liveness check — only when the browser sent an image
+    if (image) {
+        const liveness = await _callFaceService(image);
+        if (liveness === null) {
+            console.log('[FACE-SVC] Microservice unavailable — skipping liveness check');
+        } else if (!liveness.liveness) {
+            console.log(`[FACE-SVC] Liveness failed: ${liveness.reason}`);
+            return res.status(403).json({ error: liveness.reason || 'Liveness check failed — use a live selfie.' });
+        } else {
+            console.log(`[FACE-SVC] Liveness passed: ${liveness.reason}`);
+        }
     }
 
     const THRESHOLD = 0.45;
@@ -597,10 +696,13 @@ app.post('/api/biometric-connect', (req, res) => {
     // ── Commit ────────────────────────────────────────────────────────────────
     pending.used = true; // consume the token (single-use)
 
-    // Heartbeat token is only issued for online sessions (those with GPS geofencing).
-    // Offline sessions leave heartbeatToken null so the browser never starts the loop.
+    // Heartbeat tokens are issued for:
+    //   • Online sessions (GPS geofencing) — always
+    //   • VLAN mode sessions — so the browser ping detects early departure
+    // Personal hotspot sessions (isVlanMode false, no GPS) keep heartbeatToken null.
     const isOnlineSession  = !!session.targetLocation;
-    const heartbeatToken   = isOnlineSession ? randomUUID() : null;
+    const needsHeartbeat   = isOnlineSession || isVlanMode;
+    const heartbeatToken   = needsHeartbeat ? randomUUID() : null;
     const connectedAt      = new Date().toISOString();
 
     session.faceDescriptors.push({
@@ -636,9 +738,9 @@ app.post('/api/biometric-connect', (req, res) => {
         connectedAt,
         // Rich biometric profile captured at registration time
         ...(bio && { biometrics: bio }),
-        // lastSeen and heartbeat fields are only present for online sessions
-        ...(isOnlineSession && {
-            lastSeen:         connectedAt,   // updated by each GPS heartbeat
+        // lastSeen and heartbeat fields: online sessions AND VLAN sessions
+        ...(needsHeartbeat && {
+            lastSeen:         connectedAt,   // updated by each heartbeat ping
             heartbeatToken,                  // secret — stripped before sending to Flutter
             missedHeartbeats: 0,
             leftEarly:        false,
@@ -646,11 +748,10 @@ app.post('/api/biometric-connect', (req, res) => {
         time: new Date().toLocaleString(),
     });
 
-    console.log(`[FACE-OK] ${username} (${matricule}) faceId=${faceId} PIN=${pin}${isOnlineSession ? ' [heartbeat armed]' : ''}`);
+    console.log(`[FACE-OK] ${username} (${matricule}) faceId=${faceId} PIN=${pin}${needsHeartbeat ? ' [heartbeat armed]' : ''}`);
     res.status(200).json({
         ok:      true,
         message: `Successfully registered for ${session.courseName}!`,
-        // heartbeatToken and interval are only sent for online sessions
         ...(heartbeatToken && {
             heartbeatToken,
             heartbeatIntervalMs: HEARTBEAT_INTERVAL_MINUTES * 60 * 1000,
@@ -757,7 +858,7 @@ app.post('/api/heartbeat', (req, res) => {
     if (!attendee)
         return res.status(404).json({ error: 'Student not found in session' });
     if (!attendee.heartbeatToken)
-        return res.status(400).json({ error: 'Session does not use heartbeats (offline mode)' });
+        return res.status(400).json({ error: 'Session does not use heartbeats' });
     if (attendee.heartbeatToken !== token)
         return res.status(403).json({ error: 'Invalid heartbeat token' });
     if (attendee.leftEarly)

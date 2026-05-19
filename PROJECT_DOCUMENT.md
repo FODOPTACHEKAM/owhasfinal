@@ -269,10 +269,12 @@ OwHAS directly addresses each of these problems:
 | Technology | Purpose |
 |---|---|
 | Vanilla HTML / CSS / JS | Student registration UI — no frameworks needed |
-| face-api.js 0.22.2 | TinyFaceDetector + FaceLandmark68Net + FaceRecognitionNet |
+| face-api.js 0.22.2 | TinyFaceDetector + FaceLandmark68Net + FaceRecognitionNet + AgeGenderNet + FaceExpressionNet |
+| navigator.mediaDevices.getUserMedia | Live webcam stream (desktop, HTTPS / localhost only) |
 | navigator.geolocation | GPS position (online mode registration and heartbeats) |
 | Fetch API | POST registration and periodic GPS heartbeats to server |
 | setInterval | GPS heartbeat loop (fires every `HEARTBEAT_INTERVAL_MINUTES`) |
+| localStorage | Persist registered state across page reloads (24-hour TTL) |
 
 ### Cloud Services
 
@@ -411,15 +413,26 @@ The PIN is validated via `POST /api/validate-pin`. On success, the session
 name and lecturer are shown and the student advances to the face step.
 
 **Step 1 — Face Verification:**
-The page uses `<input type="file" capture="user">` to open the native
-Android/iOS camera without requiring HTTPS or `getUserMedia`. After the
-student takes a selfie, `face-api.js` runs three models (TinyFaceDetector,
-FaceLandmark68Net, FaceRecognitionNet) locally in the browser to extract
-a 128-dimension descriptor. The descriptor is sent to `POST /api/verify-face`,
-which checks it against all descriptors already registered in the session
-(Euclidean distance threshold 0.6). If a match is found, registration is
-blocked and the matched student's name is shown. If unique, a one-time
-`faceId` token is issued (valid 5 minutes).
+Face capture runs in one of two modes. On **desktop browsers served over HTTPS**,
+`getUserMedia()` opens a live webcam preview with an oval guide; the student
+taps "Take Photo" to freeze a frame. On **mobile browsers or plain HTTP**, the
+native `<input type="file" capture="user">` launches the device camera app
+— no HTTPS or special permission prompt required.
+
+After a photo is taken, `face-api.js` runs **five ML models** locally in the
+browser (TinyFaceDetector → FaceLandmark68Net → FaceRecognitionNet →
+AgeGenderNet → FaceExpressionNet) and extracts a rich biometric profile:
+a 128-dimension face descriptor, estimated age, gender, dominant facial
+expression and all expression scores, detection confidence score, and the
+bounding-box coordinates of the detected face.
+
+Only the 128-dimension descriptor is sent to `POST /api/verify-face`, which
+checks it against every descriptor already stored in the session using
+Euclidean distance (threshold **0.45**). If a match is found, registration
+is blocked and the matched student's name is shown. If unique, a one-time
+`faceId` token is issued (valid 5 minutes). The full biometric profile
+(age, gender, expressions, detection score, face box) is sent with the
+final registration POST and stored on the server-side attendee record.
 
 **Step 2 — Personal Details:**
 The student fills in: Full Name, Matricule (Student ID), and Email.
@@ -432,8 +445,12 @@ On "Register for Attendance", the page:
 4. On success, server returns `{ ok, message, heartbeatToken, heartbeatIntervalMs }`.
 5. If `heartbeatToken` is present (online session), the browser starts a
    GPS heartbeat loop and shows the "Keep this page open" status panel.
-6. For offline sessions, the page resets to step 0 after 2.5 seconds to
-   allow the next student to register.
+6. For both online and offline sessions, the page transitions to a **registered
+   success screen** showing the student's name ("Hi, [Name]!") and course.
+   The registration state is persisted in `localStorage` with a 24-hour TTL,
+   so reloading the page restores the success screen directly — the student
+   does not see the PIN form again. The heartbeat loop (if active) resumes
+   automatically after reload.
 
 ---
 
@@ -607,9 +624,12 @@ attendance totals. Export as PDF or Excel available per session.
 ### 9c. Hybrid Mode (Both Simultaneously)
 
 - Both local server and cloud are running under the same session PIN.
-- `ServerConfig.detect()` picks the local server first (faster LAN response).
+- `ServerConfig.detect()` runs the cloud probe and local scan in parallel.
+  When both respond, `isHybrid = true` and the local URL is used as the
+  primary endpoint (lower latency). The Flutter app displays a **purple
+  `cell_wifi` badge** ("Hybrid Network") in the status banner.
 - Hotspot students register on the LAN server; remote students register
-  on the cloud.
+  on the cloud server at `owhas.org`.
 - At "End Session," the Flutter app queries both servers, merges records
   by matricule (online record wins ties — it carries GPS validation), and
   exports a single unified PDF/Excel with a `Source` column (offline /
@@ -727,6 +747,20 @@ needed in the Flutter app — detection is automatic.
 | lastSeen | ISO String? | Last confirmed GPS heartbeat (online only) |
 | leftEarly | bool? | True if GPS check failed on a heartbeat |
 | time | String | Human-readable registration time |
+| biometrics | Object? | Rich face profile from AgeGenderNet + FaceExpressionNet (see below) |
+
+**biometrics sub-object** (present when captured via `hotspot.html`):
+
+| Sub-field | Type | Description |
+|---|---|---|
+| age | int? | Estimated age in years |
+| gender | String? | `"male"` or `"female"` |
+| genderProbability | float? | Confidence score 0–1 |
+| dominantExpression | String? | Expression with highest score (e.g. `"neutral"`) |
+| expressionScore | float? | Score of dominant expression 0–1 |
+| expressions | Object? | Full map of all 7 expression scores |
+| detectionScore | float? | Face detector confidence 0–1 |
+| faceBox | Object? | Bounding box `{ x, y, width, height }` in pixels |
 
 ### Student
 
@@ -768,8 +802,11 @@ needed in the Flutter app — detection is automatic.
 - 4-digit numeric PIN, range 1000–9999.
 - Generated with `Random.secure()` — cryptographically unpredictable.
 - Server-side validation: regex `^\d{4}$` before any session lookup.
-- Rate-limited: maximum 10 attempts per IP per 5-minute window via
-  `express-rate-limit` on `/api/validate-pin` and `/api/biometric-connect`.
+- Two separate `express-rate-limit` instances are applied:
+  - `pinLimiter` on `/api/validate-pin` — message: "Too many PIN attempts."
+  - `connectLimiter` on `/api/biometric-connect` — message: "Too many submission
+    attempts." (different message so students understand which form to wait on)
+  - Both: 10 attempts per IP per 5-minute window.
 - Session deactivated immediately when the lecturer ends the session via
   `POST /api/end-session`.
 - Sessions also expire automatically after `durationMinutes`; expired
@@ -780,10 +817,11 @@ needed in the Flutter app — detection is automatic.
 ### 11b. Face Recognition — Proxy Prevention (Browser Side)
 
 - When registering via `hotspot.html`, the student's selfie is processed
-  entirely in the browser by `face-api.js`.
+  entirely in the browser by `face-api.js` (five models: TinyFaceDetector,
+  FaceLandmark68Net, FaceRecognitionNet, AgeGenderNet, FaceExpressionNet).
 - A 128-dimension descriptor is extracted and sent to `POST /api/verify-face`.
 - The server computes Euclidean distance against every descriptor stored
-  in the session. Distance < 0.6 = same person → registration blocked.
+  in the session. Distance < **0.45** = same person → registration blocked.
 - A one-time `faceId` UUID is issued (5-minute TTL) and consumed on the
   final `POST /api/biometric-connect` call.
 - A race-condition guard re-checks descriptor uniqueness at commit time
@@ -882,13 +920,18 @@ presence without any additional check. There is no mechanism to connect to
 
 ### 12a. Models Used
 
-**Browser-side (hotspot.html):**
-- `TinyFaceDetector` — lightweight model optimised for mobile browsers.
-  Input size: 320, score threshold: 0.45.
-- `FaceLandmark68Net` — detects 68 facial landmarks.
-- `FaceRecognitionNet` — produces the 128-dimension descriptor vector.
-- All three models are served locally from `backend/public/models/`,
-  downloaded once by running `node setup.js`.
+**Browser-side (hotspot.html) — five models loaded sequentially at startup:**
+
+| Model | Purpose |
+|---|---|
+| `TinyFaceDetector` | Lightweight face localisation. Input size 320, detection score threshold 0.45. |
+| `FaceLandmark68Net` | Predicts 68 facial landmark points (eyes, nose, mouth, jaw). Required before running descriptor or attribute models. |
+| `FaceRecognitionNet` | Produces the 128-dimension embedding vector used for identity matching. |
+| `AgeGenderNet` | Estimates age (integer years) and biological gender with a probability score. |
+| `FaceExpressionNet` | Outputs scores for 7 expression classes: neutral, happy, sad, angry, fearful, disgusted, surprised. |
+
+All five models are served locally from `backend/public/models/` and are
+downloaded once by running `node setup.js` on the lecturer's PC.
 
 **App-side (FaceCapturePage):**
 - `google_mlkit_face_detection` — Google's on-device ML Kit.
@@ -901,15 +944,19 @@ presence without any additional check. There is no mechanism to connect to
 For each new descriptor D_new submitted at registration:
   For each D_existing already in session.faceDescriptors:
     dist = sqrt( Σ (D_new[i] − D_existing[i])² )   [Euclidean distance]
-    if dist < 0.6:
+    if dist < 0.45:
       return { unique: false, matchedName: D_existing.name }
   If no match:
     issue one-time faceId token
     return { unique: true, faceId }
 ```
 
-The 0.6 threshold is the standard value for face-api.js. Values below 0.6
-are considered the same person.
+The **0.45** threshold is more conservative than face-api.js's standard 0.6.
+A stricter threshold reduces false positives (two different people being
+treated as the same), which is more important than reducing false negatives
+in a high-stakes attendance context. The same threshold is applied at both
+the `/api/verify-face` check and the race-condition re-check inside
+`/api/biometric-connect`.
 
 ### 12c. Two-Step Commit Protocol
 
@@ -925,8 +972,9 @@ initial check and both committing.
 
 ### 12d. Known Limitations
 
-- Identical twins produce descriptors with distance < 0.6 and will fail
-  each other's registration.
+- Identical twins may produce descriptors with distance < 0.45 and will fail
+  each other's registration (stricter threshold makes this more likely than
+  at the standard 0.6 value).
 - Extreme lighting, head coverings, or heavy sunglasses reduce accuracy.
 - Photo spoofing (holding a printed photo) bypasses face capture — liveness
   detection is not implemented.
@@ -1007,26 +1055,60 @@ if needed).
 ### 14a. How `ServerConfig.detect()` Works
 
 `detect()` is called once in `main.dart` before the first screen is shown.
-It runs in a background isolate (`compute()`) to avoid UI jank.
+It runs in a background `compute()` isolate to avoid UI jank.
 
-It scans in four sequential blocks, stopping at the first success:
+The detection kicks off the cloud probe and the local subnet scan **in
+parallel** so that both results are available simultaneously. This enables
+the app to detect three distinct network states in a single pass:
 
-| Block | Addresses | Timeout | Sets |
-|---|---|---|---|
-| 1+2 — Local subnet scan | 767 IPs (5 fixed + 3 × 254 subnet) | 800 ms | `isOnline = false` |
-| 3 — Emulator loopback | `10.0.2.2:5501` | 800 ms | `isOnline = false` |
-| 4 — Cloud server | `https://owhas.org/ping` | 2000 ms | `isOnline = true` |
-| Fallback | — | — | `baseUrl = 192.168.137.1:5501, isOnline = false` |
+**Step 1 — Cloud probe (3 s parallel timeout):**
+`GET https://owhas.org/ping` is fired immediately. It runs concurrently
+with the local scan; the result is collected after the local scan finishes.
 
-The fixed candidates in block 1 include:
-- `192.168.137.1:5501` — Windows Mobile Hotspot gateway (default)
-- `10.50.1.5:5501` — Institutional VLAN server (university-managed)
+**Step 2 — Local subnet scan (800 ms, all IPs in parallel):**
 
-Both are tried in the same parallel scan pass; whichever responds first is
-used. No configuration change is needed when switching between a personal
-hotspot and the institutional VLAN deployment.
+| Candidates | Count |
+|---|---|
+| Fixed gateways (hotspot defaults) | 5 |
+| `192.168.0.x` subnet | 254 |
+| `192.168.1.x` subnet | 254 |
+| `10.0.0.x` subnet | 254 |
+| Emulator loopback `10.0.2.2:5501` | 1 (fallback if no local IP found) |
 
-Total worst-case time if nothing is found: 800 + 800 + 2000 = 3600 ms.
+Fixed gateways include `192.168.137.1` (Windows hotspot), `192.168.43.1`
+(Android hotspot), `172.20.10.1` (iOS hotspot), and `10.0.0.1`. The
+institutional VLAN server at `10.50.1.5` is caught by the `10.0.0.x`
+subnet scan automatically.
+
+**Step 3 — Combine results:**
+
+| Local found? | Cloud up? | Result | `isHybrid` | `isOnline` |
+|---|---|---|---|---|
+| ✓ | ✓ | Local URL used; both flags set | `true` | `false` |
+| ✓ | ✗ | Local URL used | `false` | `false` |
+| ✗ | ✓ | `https://owhas.org` used | `false` | `true` |
+| ✗ | ✗ | → steps 4–5 | — | — |
+
+**Step 4 — Cloud retry (5 s timeout):**
+If the 3 s parallel probe timed out, one longer attempt is made. Useful
+for slow 4G connections.
+
+**Step 5 — HTTP fallback (5 s timeout):**
+`GET http://owhas.org:5501/ping` — tried if HTTPS is blocked by the
+carrier (some mobile networks block non-standard HTTPS ports).
+
+**Step 6 — Hard fallback:**
+`baseUrl = http://192.168.137.1:5501`, `isOnline = false`.
+
+The three-state result (`isHybrid`, `isOnline`, `baseUrl`) maps directly to
+the Flutter UI status indicator:
+
+| Detection result | `ServerConnectionStatus` | Color |
+|---|---|---|
+| Local server found | `wifi` | Blue |
+| Cloud only | `cloud` | Green |
+| Both found | `hybrid` | Purple (cell_wifi icon) |
+| Nothing found | `none` | Red |
 
 ### 14b. The `_hasDetected` Cache
 
@@ -1258,7 +1340,7 @@ network configuration request addressed to the IT department.
 
 - Photo-based spoofing (holding a printed photograph) bypasses face
   recognition; liveness detection is not implemented.
-- Identical twins may produce descriptors with Euclidean distance < 0.6
+- Identical twins may produce descriptors with Euclidean distance < 0.45
   and block each other's registration.
 - Low-quality front cameras (< 2 MP) produce noisy descriptors.
 - Indoor GPS accuracy is 10–50 metres; the 50 m geofence radius may need

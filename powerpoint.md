@@ -162,20 +162,26 @@ No URL. No QR code needed. No app to install on the student's side.
 ```
 Step 1: Enter PIN   →   Step 2: Face Capture   →   Step 3: Personal Details
                             │
-                     face-api.js (runs in browser)
-                     TinyFaceDetector + FaceRecognitionNet
+                     face-api.js (runs in browser) — 5 models
+                     TinyFaceDetector
+                     FaceLandmark68Net
+                     FaceRecognitionNet → 128-D descriptor
+                     AgeGenderNet      → age + gender
+                     FaceExpressionNet → emotion scores
                             │
-                     Server checks face descriptor
+                     Server checks 128-D descriptor
                      against all registered faces
                      Euclidean distance < 0.45 → REJECT
 ```
 
 **Bullets:**
-- face-api.js runs entirely in the student's browser — no server-side ML
-- Face descriptor (128-number vector) compared against all registered students
-- Duplicate face → registration blocked with "Face already registered" error
+- face-api.js runs entirely in the student's browser — no server-side ML, no GPU needed
+- 5 models extract: 128-D identity descriptor + age + gender + dominant expression + detection score
+- Face descriptor compared against all registered students in the session
+- Duplicate face → registration blocked with matched student's name shown
 - Two-phase commit with `faceId` token: dedup check → 5-min TTL → commit (race-condition safe)
-- Face data never written to disk — in-memory only (privacy by design)
+- After registration: success screen shows student's name — persists across page reloads (localStorage, 24 h)
+- Face descriptors never written to disk — in-memory only, discarded when session ends (privacy by design)
 
 **Speaker notes:**
 A student cannot sign for a friend because the face must match a unique descriptor.
@@ -227,28 +233,33 @@ because their heartbeats stop. The server background job detects silence after
 
 **Visual:**
 ```
-VLAN server (10.50.1.5)
+Flutter App server detection — runs cloud probe + local scan IN PARALLEL
       │
-      ├── ICTU_ATD captive portal → in-class students
-      │         (Wi-Fi proximity as presence proof)
+      ├── Local server found (192.168.137.1 or 10.50.1.5)   ─── hotspot/VLAN
+      │         └── in-class students via captive portal
       │
-      └── ngrok HTTPS tunnel → remote students
-                (face biometric as presence proof)
-                
+      └── Cloud also reachable (https://owhas.org)           ─── internet
+                └── remote students via same session PIN
+
+Both found simultaneously → isHybrid = true
+Flutter badge: 🟣 Hybrid Network (purple, cell_wifi icon)
+
 Both groups → same session → same dashboard → one PDF
 ```
 
 **Bullets:**
-- `ngrok http 5501` creates a public HTTPS URL in seconds
-- Remote students access `https://abc123.ngrok-free.app` — same hotspot.html
-- Same PIN, same session, one unified attendance list
-- In-class: 10.50.1.x IP (VLAN) · Remote: public IP (internet)
-- No GPS enforcement in hybrid mode (local session, no targetLocation)
+- Server detection probes local LAN and `https://owhas.org` simultaneously (parallel)
+- When both respond: **Hybrid** status — purple banner in the Flutter app
+- In-class students register via captive portal (Wi-Fi proximity as presence proof)
+- Remote students access `https://owhas.org` — same `hotspot.html`, same PIN
+- At session end: records from both sources merged by matricule into one report
+- Cloud only / Local only / Hybrid detected automatically — no configuration needed
 
 **Speaker notes:**
-Post-COVID, universities run hybrid classes. OwHAS handles this without
-running two separate sessions. The lecturer runs ngrok before class, shares the
-URL, and both groups appear in the same list.
+Post-COVID, universities run hybrid classes. OwHAS handles this automatically.
+The app detects both the local hotspot server and the cloud simultaneously and
+shows a purple "Hybrid Network" indicator. Both groups appear in the same
+attendance list and are exported into one PDF.
 
 **Duration:** 1.5 min
 
@@ -290,16 +301,20 @@ No laptop needed once the VLAN server is deployed permanently.
 
 **Bullets:**
 - Pure HTML/CSS/JS — no app download needed
-- TinyFaceDetector runs client-side: captures 128-D face descriptor
+- Dual-mode camera: **live webcam** on desktop HTTPS · **native camera** on mobile/HTTP
+- Five face-api.js models run locally: identity + age + gender + expression + detection score
 - Three registration steps: PIN → Face → Details
-- Heartbeat timer starts automatically after registration (online mode)
+- After registration: success screen shows "Hi, [Name]!" with course info
+- Registration state saved to localStorage (24 h) — page reload shows the student's name, not the PIN form
+- Heartbeat timer starts automatically after registration (online mode) and resumes after reload
 - Works in Chrome (Android), Safari (iOS), Edge (Windows)
-- Camera requires HTTPS — ensured by ngrok tunnel in hybrid mode
 
 **Speaker notes:**
 The student opens the page from the captive portal notification.
 They enter the PIN, take a selfie, fill in their name and matricule.
 Done in under 30 seconds. No app. No account. Nothing to install.
+After they register, the page shows their name. If they accidentally reload,
+it comes back to their name — they don't have to register again.
 
 **Duration:** 1.5 min
 
@@ -402,8 +417,10 @@ and GPS coordinates are discarded immediately after the distance check.
 3. **Race condition: two phones, same face, near-simultaneous submission**
    → Two-phase commit: `verify-face` reserves a one-time token, `biometric-connect` re-checks at commit
 
-4. **Server IP changes on every hotspot session**
-   → Background isolate scans 767 IPs in parallel with 800 ms timeout; first ping response wins
+4. **Server IP unknown; must also detect cloud vs local vs both**
+   → Cloud probe (`https://owhas.org`) and local scan (767 IPs, 800 ms) run **in parallel**.
+     Three outcomes: local-only (Wi-Fi), cloud-only, or **hybrid** (both reachable simultaneously).
+     Hybrid → `isHybrid = true`, local URL used as primary, purple badge shown in app.
 
 5. **GPS heartbeat clock drift**
    → `lastSeen` ISO timestamp stored server-side; Flutter computes duration from `lastSeen − connectedAt` (not wall clock)
@@ -572,7 +589,7 @@ Thank you. I'm happy to take questions.
 |---|---|
 | What if a student's camera is broken? | Lecturer can add manually via the dashboard → bypasses face check, marked as manual entry |
 | What if the lecturer's laptop dies mid-session? | Sessions.json persists to disk; restart server and the session resumes |
-| How accurate is face recognition? | TinyFaceDetector with threshold 0.45 → ~95% accuracy in good lighting; degrades in poor light |
+| How accurate is face recognition? | face-api.js with threshold 0.45 (stricter than the 0.6 default) → ~95% accuracy in good lighting; five models extract identity, age, gender, and expression; degrades in poor light |
 | Can students spoof GPS? | GPS spoofing is possible but requires a third-party app the student must knowingly install |
 | Does it work on iPhone? | Yes — captive portal + Safari. Camera requires HTTPS → use ngrok URL or owhas.local |
 | Is the face data GDPR compliant? | Face descriptors are in-memory only, never written to storage, discarded when session ends |

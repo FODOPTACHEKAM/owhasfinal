@@ -1,14 +1,26 @@
 {
-  "9512": {
-    "courseName": "Introduction to Programming",
-    "courseCode": "IFT1005",
-    "lecturerId": "Fodop Jordan",
-    "lecturerName": "Fodop Jordan",
-    "sessionToken": "RS-9sFgH7eDchvaf6rdhr4VKJiH9IoZX9tYHKAFobKc=",
+  "5392": {
+    "courseName": "ISN ",
+    "courseCode": "CS123",
+    "lecturerId": "Eng.Palma",
+    "lecturerName": "Eng.Palma",
+    "sessionToken": "ZEDuIb3r3ZXUJ9OCVZBSpdjlQusZV4U3gF13PaS5Rg4=",
     "targetLocation": null,
     "attendees": [],
     "faceDescriptors": [],
-    "createdAt": "2026-05-17T04:08:53.604Z",
-    "expiresAt": "2026-05-17T05:08:53.604Z"
+    "createdAt": "2026-05-18T13:04:04.228Z",
+    "expiresAt": "2026-05-18T14:04:04.228Z"
+  },
+  "9971": {
+    "courseName": "Software Engineering",
+    "courseCode": "IFT3010",
+    "lecturerId": "Eng Palma",
+    "lecturerName": "Eng Palma",
+    "sessionToken": "BsYt2Fc-2EzfRgdRpE_rV3kwNRk1lR2PSyLnvJmjUio=",
+    "targetLocation": null,
+    "attendees": [],
+    "faceDescriptors": [],
+    "createdAt": "2026-05-18T13:32:53.419Z",
+    "expiresAt": "2026-05-18T14:32:53.419Z"
   }
 }
