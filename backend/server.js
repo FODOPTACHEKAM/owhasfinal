@@ -214,6 +214,31 @@ function faceDistance(a, b) {
     return Math.sqrt(a.reduce((sum, val, i) => sum + Math.pow(val - b[i], 2), 0));
 }
 
+// GPS geofence check with accuracy-aware radius.
+// Returns { ok: true } or { ok: false, reason: string }.
+const HARD_RADIUS_M    = 50;   // base classroom radius in metres
+const ACCURACY_WAIVE_M = 300;  // waive geofence entirely when GPS accuracy is worse than this
+
+function checkGeofence(targetLocation, latitude, longitude, gpsAccuracy) {
+    if (!targetLocation) return { ok: true };
+    if (latitude === undefined || longitude === undefined)
+        return { ok: false, reason: 'This session requires GPS location to be enabled.' };
+    const dist = calculateDistance(
+        targetLocation.latitude, targetLocation.longitude,
+        parseFloat(latitude), parseFloat(longitude)
+    );
+    if (dist === null || isNaN(dist)) return { ok: false, reason: 'Invalid GPS coordinates.' };
+    const accuracy = parseFloat(gpsAccuracy) || 0;
+    if (accuracy > ACCURACY_WAIVE_M) {
+        console.log(`[GEOFENCE] Waived — GPS accuracy ${accuracy.toFixed(0)} m exceeds ${ACCURACY_WAIVE_M} m threshold.`);
+        return { ok: true, skipped: true };
+    }
+    const effectiveRadius = HARD_RADIUS_M + accuracy;
+    if (dist > effectiveRadius)
+        return { ok: false, reason: `You are ${dist.toFixed(0)} m from the classroom (limit ${effectiveRadius.toFixed(0)} m). Move closer and try again.` };
+    return { ok: true };
+}
+
 // Resolve session from PIN or session token
 function getSessionByPinOrToken(pin, token) {
     if (pin) return getSessionByPin(pin);
@@ -297,6 +322,7 @@ app.get('/api/session-info', (req, res) => {
         courseCode:   session.courseCode,
         lecturerName: session.lecturerName,
         lecturerId:   session.lecturerId,
+        requiresGps:  !!session.targetLocation,
     });
 });
 
@@ -308,11 +334,12 @@ app.post('/api/validate-pin', (req, res) => {
         return res.status(404).json({ error: 'Invalid or expired PIN' });
     }
     res.json({
-        valid: true,
-        courseName: session.courseName,
-        courseCode: session.courseCode,
-        lecturerId: session.lecturerId,
+        valid:        true,
+        courseName:   session.courseName,
+        courseCode:   session.courseCode,
+        lecturerId:   session.lecturerId,
         lecturerName: session.lecturerName,
+        requiresGps:  !!session.targetLocation,
     });
 });
 
@@ -481,14 +508,8 @@ app.post('/connect', (req, res) => {
         return res.status(400).send("A valid Session PIN is required. Ask your lecturer for the current PIN.");
     }
 
-    if (session.targetLocation) {
-        if (latitude === undefined || longitude === undefined) {
-            return res.status(403).send("This session requires GPS location to be enabled.");
-        }
-        const dist = calculateDistance(session.targetLocation.latitude, session.targetLocation.longitude, parseFloat(latitude), parseFloat(longitude));
-        if (dist === null || isNaN(dist)) return res.status(400).send("Invalid GPS coordinates.");
-        if (dist > 50) return res.status(403).send(`Geofence Error: You are ${dist.toFixed(0)}m away from the classroom.`);
-    }
+    const geoCheck = checkGeofence(session.targetLocation, latitude, longitude, req.body.gpsAccuracy);
+    if (!geoCheck.ok) return res.status(403).send(geoCheck.reason);
 
     const existingEntry = session.attendees.find(a => a.ip === studentIP);
     if (existingEntry) {
@@ -583,16 +604,8 @@ app.post('/api/biometric-connect', (req, res) => {
         return res.status(200).send('You are already registered for this session.');
 
     // ── GPS geofence ──────────────────────────────────────────────────────────
-    if (session.targetLocation) {
-        if (latitude === undefined || longitude === undefined)
-            return res.status(403).send('This session requires GPS location to be enabled.');
-        const dist = calculateDistance(
-            session.targetLocation.latitude, session.targetLocation.longitude,
-            parseFloat(latitude), parseFloat(longitude)
-        );
-        if (dist === null || isNaN(dist)) return res.status(400).send('Invalid GPS coordinates.');
-        if (dist > 50) return res.status(403).send(`Geofence: you are ${dist.toFixed(0)} m from the classroom.`);
-    }
+    const geoCheck = checkGeofence(session.targetLocation, latitude, longitude, req.body.gpsAccuracy);
+    if (!geoCheck.ok) return res.status(403).send(geoCheck.reason);
 
     // ── Commit ────────────────────────────────────────────────────────────────
     pending.used = true; // consume the token (single-use)
@@ -767,18 +780,23 @@ app.post('/api/heartbeat', (req, res) => {
     if (session.targetLocation) {
         if (lat == null || lng == null)
             return res.status(400).json({ error: 'GPS coordinates required for heartbeat' });
-        const dist = calculateDistance(
-            session.targetLocation.latitude, session.targetLocation.longitude,
-            parseFloat(lat), parseFloat(lng)
-        );
-        if (dist === null || isNaN(dist))
-            return res.status(400).json({ error: 'Invalid GPS coordinates' });
-        if (dist > 50) {
-            attendee.leftEarly = true;
-            console.log(`[HEARTBEAT] ${matricule} left early — ${dist.toFixed(0)}m from classroom. Clock frozen at ${attendee.lastSeen}`);
-            return res.status(403).json({
-                error: `You are ${dist.toFixed(0)}m from the classroom — attendance duration frozen.`,
-            });
+        const accuracy = parseFloat(req.body.accuracy) || 0;
+        // Waive when GPS accuracy is too poor to make a reliable call
+        if (accuracy <= ACCURACY_WAIVE_M) {
+            const dist = calculateDistance(
+                session.targetLocation.latitude, session.targetLocation.longitude,
+                parseFloat(lat), parseFloat(lng)
+            );
+            if (dist === null || isNaN(dist))
+                return res.status(400).json({ error: 'Invalid GPS coordinates' });
+            const effectiveRadius = HARD_RADIUS_M + accuracy;
+            if (dist > effectiveRadius) {
+                attendee.leftEarly = true;
+                console.log(`[HEARTBEAT] ${matricule} left early — ${dist.toFixed(0)} m from classroom. Clock frozen at ${attendee.lastSeen}`);
+                return res.status(403).json({
+                    error: `You are ${dist.toFixed(0)} m from the classroom — attendance duration frozen.`,
+                });
+            }
         }
     }
 
