@@ -15,23 +15,31 @@ class _ServerDetectionResult {
 /// Top-level function for background server detection (runs in Isolate via compute).
 /// This prevents UI jank by executing on a separate thread.
 ///
-/// Detection runs local scan and cloud probe IN PARALLEL so the result correctly
-/// reflects all three states: cloud-only, local-only (wifi), or both (hybrid).
+/// Detection order (optimised for the common online/cloud use-case):
+///   1. https://owhas.org  — fast first check (most sessions go through the cloud)
+///   2. Local LAN scan     — fixed gateways + subnet, parallel, 800 ms
+///   3. Hybrid resolution  — both local + cloud reachable simultaneously
+///   4. Slow-4G cloud retry
+///   5. http://owhas.org:5501 — direct HTTP fallback (no reverse proxy)
+///   6. https://owhas.org  — final last-resort retry before giving up
 Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
-  const Duration localTimeout = Duration(milliseconds: 800);
-  // Shorter cloud timeout for the parallel hybrid check — if internet is
-  // available on the VLAN it responds well under 3 s. A slow 4G fallback
-  // uses the longer timeout in step 3 below.
-  const Duration cloudParallelTimeout = Duration(seconds: 3);
-
   final cloudUrl     = ServerConfig().onlineUrl;      // https://owhas.org
   final httpFallback = ServerConfig().onlineUrlHttp;  // http://owhas.org:5501
   final emulatorUrl  = ServerConfig().emulatorUrl;
 
-  // ── 1. Kick off cloud probe immediately (runs while local scan proceeds) ──
+  // ── 1. Cloud first — covers the most common case with minimal delay ──────────
+  if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 2))) {
+    debugPrint('[ServerConfig] Cloud detected (priority check): $cloudUrl');
+    return _ServerDetectionResult(url: cloudUrl, isOnline: true);
+  }
+
+  // ── 2. Local scan: fixed gateways + full subnet (all parallel, 800 ms) ──────
+  // Cloud probe runs concurrently so hybrid detection is still accurate.
+  const Duration localTimeout         = Duration(milliseconds: 800);
+  const Duration cloudParallelTimeout = Duration(seconds: 3);
+
   final cloudFuture = _pingWithStrictTimeout(cloudUrl, cloudParallelTimeout);
 
-  // ── 2. Local scan: fixed gateways + full subnet (all in parallel, 800 ms) ──
   final fixedCandidates = <String>[
     // 'http://10.50.1.5:5501',   // ← University VLAN fixed IP (uncomment + edit when deployed)
     'http://192.168.137.1:5501',  // Windows Mobile Hotspot
@@ -69,11 +77,10 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
     } catch (_) {}
   }
 
-  // ── 3. Collect cloud result (already running; just await it) ──
+  // ── 3. Hybrid resolution (collect parallel cloud result) ─────────────────────
   final cloudUp = await cloudFuture;
 
   if (localUrl != null && cloudUp) {
-    // Both reachable → hybrid VLAN with internet
     debugPrint('[ServerConfig] Hybrid detected: local=$localUrl + cloud');
     return _ServerDetectionResult(url: localUrl, isOnline: false, isHybrid: true);
   }
@@ -82,27 +89,29 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
     return _ServerDetectionResult(url: localUrl, isOnline: false);
   }
   if (cloudUp) {
-    debugPrint('[ServerConfig] Cloud server detected: $cloudUrl');
+    debugPrint('[ServerConfig] Cloud detected (parallel check): $cloudUrl');
     return _ServerDetectionResult(url: cloudUrl, isOnline: true);
   }
 
-  // ── 4. Cloud not reachable within 3 s — retry with a longer timeout for slow 4G ──
-  try {
-    if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 5))) {
-      debugPrint('[ServerConfig] Cloud detected (slow 4G): $cloudUrl');
-      return _ServerDetectionResult(url: cloudUrl, isOnline: true);
-    }
-  } catch (_) {}
+  // ── 4. Slow 4G — give cloud a longer window ───────────────────────────────────
+  if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 5))) {
+    debugPrint('[ServerConfig] Cloud detected (slow 4G): $cloudUrl');
+    return _ServerDetectionResult(url: cloudUrl, isOnline: true);
+  }
 
-  // ── 5. HTTP:5501 last resort (port may be blocked on mobile networks) ──
-  try {
-    if (await _pingWithStrictTimeout(httpFallback, const Duration(seconds: 5))) {
-      debugPrint('[ServerConfig] Cloud HTTP fallback detected: $httpFallback');
-      return _ServerDetectionResult(url: httpFallback, isOnline: true);
-    }
-  } catch (_) {}
+  // ── 5. HTTP:5501 direct fallback (port 443 blocked on some networks) ─────────
+  if (await _pingWithStrictTimeout(httpFallback, const Duration(seconds: 5))) {
+    debugPrint('[ServerConfig] Cloud HTTP fallback detected: $httpFallback');
+    return _ServerDetectionResult(url: httpFallback, isOnline: true);
+  }
 
-  // ── 6. Nothing found ──
+  // ── 6. Final cloud retry — last resort before giving up ──────────────────────
+  if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 5))) {
+    debugPrint('[ServerConfig] Cloud detected (last resort): $cloudUrl');
+    return _ServerDetectionResult(url: cloudUrl, isOnline: true);
+  }
+
+  // ── 7. Nothing found ─────────────────────────────────────────────────────────
   debugPrint('[ServerConfig] No server detected. Falling back to default hotspot URL.');
   return _ServerDetectionResult(url: 'http://192.168.137.1:5501', isOnline: false);
 }
