@@ -137,6 +137,13 @@
             font-size:.95rem;font-weight:600;cursor:pointer;transition:var(--transition);margin-top:.75rem;
         }
         .button-secondary:hover{background:var(--gray-50);border-color:var(--accent);color:var(--accent)}
+        .button-gps{width:100%;padding:.75rem 1.25rem;background:transparent;color:var(--gray-600);border:1.5px dashed var(--gray-300);border-radius:var(--radius-md);font-size:.88rem;font-weight:500;cursor:pointer;transition:var(--transition);margin-top:.5rem;display:flex;align-items:center;justify-content:center;gap:.5rem;}
+        .button-gps:hover{border-color:var(--accent);color:var(--accent);background:rgba(0,132,212,.04)}
+        .button-gps:disabled{opacity:.5;cursor:not-allowed}
+        .gps-badge{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--gray-500);background:var(--gray-100);border:1px solid var(--gray-200);border-radius:20px;padding:3px 10px;margin-top:.4rem;width:fit-content;margin-left:auto;margin-right:auto}
+        .gps-badge.good{color:var(--success);border-color:rgba(16,185,129,.3);background:rgba(16,185,129,.06)}
+        .gps-badge.poor{color:var(--warning);border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.05)}
+        .gps-badge.fail{color:var(--error);border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.05)}
 
         /* ── Status panel ── */
         .info-panel{background:var(--gray-50);border-left:4px solid var(--accent);border-radius:var(--radius-md);padding:1rem 1.125rem;margin-top:1.25rem;animation:slideIn .3s ease-out}
@@ -372,6 +379,8 @@
                 <span>Register for Attendance</span>
             </button>
             <button class="button-secondary" id="backToFaceBtn" type="button">← Retake Photo</button>
+            <button class="button-gps" id="refreshGpsBtn" type="button">📍 Refresh GPS Location</button>
+            <div id="gpsBadge" style="display:none"></div>
         </section>
 
         <!-- ── Step 3: Registered state (replaces all steps after success) ── -->
@@ -647,8 +656,10 @@ class AttendanceRegistrationApp {
         this.faceId           = null;  // one-time token issued by /api/verify-face
         this.faceManager      = null;
         this.currentStep      = 0;
-        this._heartbeatTimer  = null;  // setInterval handle for GPS keep-alive
-        this._heartbeatData   = null;  // { token, matricule, pin, sessionToken }
+        this._heartbeatTimer      = null;  // setInterval handle for GPS keep-alive
+        this._heartbeatData       = null;  // { token, matricule, pin, sessionToken }
+        this._cachedPosition      = null;  // { position, cachedAt } — refreshed by Refresh GPS button
+        this._sessionRequiresGps  = false; // set to true when session-info says requiresGps
 
         this._bindElements();
         this._bindListeners();
@@ -686,6 +697,8 @@ class AttendanceRegistrationApp {
             email:          document.getElementById('email'),
             submitBtn:      document.getElementById('submitBtn'),
             backToFaceBtn:  document.getElementById('backToFaceBtn'),
+            refreshGpsBtn:  document.getElementById('refreshGpsBtn'),
+            gpsBadge:       document.getElementById('gpsBadge'),
 
             // Step 3 – Registered
             successSection: document.getElementById('successSection'),
@@ -708,6 +721,7 @@ class AttendanceRegistrationApp {
         this.el.backToPinBtn.addEventListener('click',  () => this._goToStep(0));
         this.el.backToFaceBtn.addEventListener('click', () => this._goToStep(1));
         this.el.submitBtn.addEventListener('click',     () => this._handleSubmit());
+        this.el.refreshGpsBtn.addEventListener('click', () => this._handleRefreshGps());
 
         // Strip any non-digit characters the Android keyboard might inject
         // (some keyboards add spaces, dots, or Unicode digits on numeric mode)
@@ -817,8 +831,10 @@ class AttendanceRegistrationApp {
             });
 
             if (r.ok) {
-                this.validatedSession = await r.json();
+                const data = await r.json();
+                this.validatedSession = data;
                 this.currentPin = pin;
+                this._sessionRequiresGps = !!data.requiresGps;
                 this._status('PIN verified ✓ — preparing face recognition…', 'success');
                 this._goToStep(1);
             } else {
@@ -934,10 +950,25 @@ class AttendanceRegistrationApp {
         }
 
         this._btnLoading(this.el.submitBtn, true, 'submit');
-        this._status('Acquiring location…', 'info');
 
         try {
-            const position = await this._getLocation();
+            let position = null;
+            const TWO_MIN = 2 * 60 * 1000;
+            if (this._cachedPosition && (Date.now() - this._cachedPosition.cachedAt) < TWO_MIN) {
+                position = this._cachedPosition.position;
+                this._status('Submitting with saved location…', 'info');
+            } else {
+                this._status('Acquiring GPS location…', 'info');
+                position = await this._getLocation();
+                if (!position && this._sessionRequiresGps) {
+                    this._status(
+                        'GPS signal not found. Tap "📍 Refresh GPS Location" below and wait a few seconds, then try again.',
+                        'error'
+                    );
+                    this._btnLoading(this.el.submitBtn, false, 'submit');
+                    return;
+                }
+            }
             await this._submitRegistration(position);
         } catch (e) {
             this._status(`Submission error: ${e.message}`, 'error');
@@ -946,15 +977,52 @@ class AttendanceRegistrationApp {
         }
     }
 
-    _getLocation() {
+    _getLocation(timeoutMs = 15000) {
         return new Promise((resolve) => {
             if (!navigator.geolocation) return resolve(null);
             navigator.geolocation.getCurrentPosition(
                 pos => resolve(pos),
                 ()  => resolve(null),
-                { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+                { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 }
             );
         });
+    }
+
+    async _handleRefreshGps() {
+        const btn   = this.el.refreshGpsBtn;
+        const badge = this.el.gpsBadge;
+        btn.disabled = true;
+        btn.querySelector ? btn.textContent = '📍 Getting location…' : null;
+        btn.textContent = '📍 Getting location…';
+        badge.style.display = 'none';
+
+        const pos = await this._getLocation(20000);
+
+        btn.disabled = false;
+        btn.textContent = '📍 Refresh GPS Location';
+
+        if (!pos) {
+            badge.className = 'gps-badge fail';
+            badge.style.display = 'flex';
+            badge.textContent = '✗ GPS unavailable — move to a window or open space';
+            return;
+        }
+
+        const acc = pos.coords.accuracy;
+        this._cachedPosition = { position: pos, cachedAt: Date.now() };
+
+        if (acc <= 100) {
+            badge.className = 'gps-badge good';
+            badge.textContent = `✓ Good signal  ±${acc.toFixed(0)} m`;
+        } else if (acc <= 300) {
+            badge.className = 'gps-badge poor';
+            badge.textContent = `~ Weak signal  ±${acc.toFixed(0)} m`;
+        } else {
+            badge.className = 'gps-badge poor';
+            badge.textContent = `~ Very weak  ±${acc.toFixed(0)} m (will be accepted)`;
+        }
+        badge.style.display = 'flex';
+        this._status('Location saved — tap Register to submit.', 'success');
     }
 
     async _submitRegistration(position) {
@@ -965,8 +1033,9 @@ class AttendanceRegistrationApp {
         };
 
         if (position) {
-            payload.latitude  = position.coords.latitude;
-            payload.longitude = position.coords.longitude;
+            payload.latitude    = position.coords.latitude;
+            payload.longitude   = position.coords.longitude;
+            payload.gpsAccuracy = position.coords.accuracy;
         }
 
         // Attach the one-time face token issued by /api/verify-face
@@ -1130,6 +1199,7 @@ class AttendanceRegistrationApp {
                 matricule: this._heartbeatData.matricule,
                 lat:       pos.coords.latitude,
                 lng:       pos.coords.longitude,
+                accuracy:  pos.coords.accuracy,
             };
             if (this._heartbeatData.pin)          body.pin          = this._heartbeatData.pin;
             if (this._heartbeatData.sessionToken) body.sessionToken = this._heartbeatData.sessionToken;
@@ -1204,6 +1274,7 @@ class AttendanceRegistrationApp {
                     courseCode:   data.courseCode   || '',
                     lecturerName: data.lecturerName || data.lecturerId || 'Instructor',
                 };
+                this._sessionRequiresGps = !!data.requiresGps;
             } else {
                 // Session not found on server yet — use placeholder but warn
                 this.validatedSession = { tokenMode: true, courseName: 'Session not found — ask instructor to reconnect' };
