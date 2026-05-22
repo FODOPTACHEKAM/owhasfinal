@@ -91,6 +91,10 @@ const FILES = [
     [`${BASE}/face_recognition_model-weights_manifest.json`,   path.join(MODELS_DIR, 'face_recognition_model-weights_manifest.json')],
     [`${BASE}/face_recognition_model-shard1`,                  path.join(MODELS_DIR, 'face_recognition_model-shard1')],
     [`${BASE}/face_recognition_model-shard2`,                  path.join(MODELS_DIR, 'face_recognition_model-shard2')],
+    [`${BASE}/age_gender_model-weights_manifest.json`,         path.join(MODELS_DIR, 'age_gender_model-weights_manifest.json')],
+    [`${BASE}/age_gender_model-shard1`,                        path.join(MODELS_DIR, 'age_gender_model-shard1')],
+    [`${BASE}/face_expression_model-weights_manifest.json`,    path.join(MODELS_DIR, 'face_expression_model-weights_manifest.json')],
+    [`${BASE}/face_expression_model-shard1`,                   path.join(MODELS_DIR, 'face_expression_model-shard1')],
 ];
 
 (async () => {
