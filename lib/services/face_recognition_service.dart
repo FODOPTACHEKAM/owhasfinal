@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
+import '../config.dart';
 
 class _FaceData {
   final List<double> descriptor;
@@ -34,8 +35,9 @@ class FaceRecognitionService {
   // sessionId → { matricule → FaceData }
   final Map<String, Map<String, _FaceData>> _sessions = {};
 
-  // Cosine similarity threshold: faces above this are considered the same person
-  static const double _threshold = 0.82;
+  // Cosine similarity threshold: faces above this are considered the same person.
+  // Tune AppConfig.faceMatchThreshold in lib/config.dart.
+  static double get _threshold => AppConfig.faceMatchThreshold;
 
   void clearSession(String sessionId) => _sessions.remove(sessionId);
 

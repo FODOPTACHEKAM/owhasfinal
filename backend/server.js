@@ -33,46 +33,70 @@ const connectLimiter = rateLimit({
 app.use('/api/validate-pin',     pinLimiter);
 app.use('/api/biometric-connect', connectLimiter);
 
-// ====== HARDCODED SERVER CONFIG ======
-const PORT = 5501; // same port for both HTTP and HTTPS
-
 // ══════════════════════════════════════════════════════════════════
-//  ONLINE HEARTBEAT CONFIGURATION
-//  ─────────────────────────────────────────────────────────────────
-//  These are the only two values to edit when tuning presence checks.
+//  SERVER CONFIGURATION — all tunable values are here
+//  New owner: read this block before touching anything else.
 //
-//  HEARTBEAT_INTERVAL_MINUTES
-//      How often (minutes) the student's browser must send a GPS ping.
-//      The server returns this value to the browser at registration so
-//      both sides always stay in sync automatically.
-//      Shorter = tighter enforcement, more GPS battery drain.
-//      Recommended: 2
-//
-//  HEARTBEAT_GRACE_PERIODS
-//      How many consecutive missed heartbeats are tolerated before the
-//      student is flagged as leftEarly and their duration clock frozen.
-//      Set to 0 to freeze on the very first missed beat.
-//      Recommended: 1
+//  Flutter counterpart: lib/config.dart
 // ══════════════════════════════════════════════════════════════════
-const HEARTBEAT_INTERVAL_MINUTES = 2;   // ← edit this to change check frequency
-const HEARTBEAT_GRACE_PERIODS    = 1;   // ← edit this to change missed-beat tolerance
 
-// ══════════════════════════════════════════════════════════════════
-//  DEPLOYMENT MODE — Hotspot  vs.  University VLAN
-//  ─────────────────────────────────────────────────────────────────
+// ── Network ───────────────────────────────────────────────────────
+//  Port the server listens on (HTTP and HTTPS share the same port).
+//  Change also in: lib/config.dart → AppConfig.serverPort
+//                  lib/services/server_config.dart → fixedCandidates / subnetCandidates
+const PORT = 5501;
+
+// ── Deployment mode ───────────────────────────────────────────────
 //  SERVER_IP = null        → Windows Mobile Hotspot mode
 //      IP is auto-detected from network interfaces (192.168.137.1 etc.)
-//      Browser auto-opens on startup. DHCP not started.
+//      Browser auto-opens on startup. DHCP server NOT started.
 //
-//  SERVER_IP = '10.x.x.x' → University VLAN mode (ICTU_ATD)
+//  SERVER_IP = '10.x.x.x' → University VLAN mode
 //      Fixed IP assigned by IT is used directly — no scanning.
 //      Browser auto-open is skipped (headless server).
-//      DHCP server starts and advertises this IP as the DNS server,
-//      making the captive portal fully automatic for connecting phones.
+//      DHCP server starts and advertises this IP as the DNS server so
+//      phones on the VLAN get the captive portal automatically.
 //
-//  To switch modes: change this one constant and restart the server.
-// ══════════════════════════════════════════════════════════════════
+//  To switch modes: change this one line and restart.
+//  See WLAN.md for the full university deployment guide.
 const SERVER_IP = null;   // ← set to e.g. '10.50.1.5' for university VLAN
+
+// ── GPS geofencing (online sessions only) ─────────────────────────
+//  Classroom radius in metres. A student must be within this distance
+//  of the lecturer's GPS position to register and to keep their clock running.
+//  The effective radius = GEOFENCE_RADIUS_M + student's reported GPS accuracy,
+//  so students with less accurate GPS still get a fair chance.
+const GEOFENCE_RADIUS_M = 50;
+
+//  If a phone reports GPS accuracy worse than this value (metres), the
+//  geofence check is waived entirely — the phone cannot make a reliable call.
+const GEOFENCE_GEOFENCE_ACCURACY_WAIVE_M = 300;
+
+// ── Face recognition ──────────────────────────────────────────────
+//  Euclidean distance threshold for the server-side face duplicate check.
+//  Lower = stricter (harder to spoof). Must pair with faceMatchThreshold
+//  in lib/config.dart (cosine similarity, Flutter side).
+const FACE_DISTANCE_THRESHOLD = 0.45;
+
+// ── Heartbeat (online sessions only) ─────────────────────────────
+//  How often (minutes) the student's browser must send a GPS ping.
+//  The server returns this value to the browser at registration so both
+//  sides stay in sync automatically. Shorter = tighter, more battery drain.
+const HEARTBEAT_INTERVAL_MINUTES = 2;
+
+//  Missed heartbeats tolerated before the student is flagged as leftEarly
+//  and their duration clock is frozen. 0 = freeze on the very first miss.
+const HEARTBEAT_GRACE_PERIODS = 1;
+
+// ── Session defaults ──────────────────────────────────────────────
+//  Initial values used when a session starts. The Flutter app overwrites
+//  these via POST /api/session-config when the lecturer creates a session.
+//  Edit here to change the out-of-box defaults before the app connects.
+//  Flutter-side UI defaults live in lib/config.dart → AppConfig.default*
+const DEFAULT_REQUIRED_MINUTES = 15;
+const DEFAULT_GRACE_PERIOD_MINUTES = 5;
+
+// ══════════════════════════════════════════════════════════════════
 
 
 
@@ -191,8 +215,8 @@ if (fs.existsSync(SESSION_FILE)) {
 }
 
 let sessionConfig = {
-    requiredConnectionMinutes: 15,
-    gracePeriodMinutes: 5,
+    requiredConnectionMinutes: DEFAULT_REQUIRED_MINUTES,
+    gracePeriodMinutes:        DEFAULT_GRACE_PERIOD_MINUTES,
 };
 
 // ====== Haversine Formula for GPS Geofencing ======
@@ -216,9 +240,6 @@ function faceDistance(a, b) {
 
 // GPS geofence check with accuracy-aware radius.
 // Returns { ok: true } or { ok: false, reason: string }.
-const HARD_RADIUS_M    = 50;   // base classroom radius in metres
-const ACCURACY_WAIVE_M = 300;  // waive geofence entirely when GPS accuracy is worse than this
-
 function checkGeofence(targetLocation, latitude, longitude, gpsAccuracy) {
     if (!targetLocation) return { ok: true };
     if (latitude === undefined || longitude === undefined)
@@ -229,11 +250,11 @@ function checkGeofence(targetLocation, latitude, longitude, gpsAccuracy) {
     );
     if (dist === null || isNaN(dist)) return { ok: false, reason: 'Invalid GPS coordinates.' };
     const accuracy = parseFloat(gpsAccuracy) || 0;
-    if (accuracy > ACCURACY_WAIVE_M) {
-        console.log(`[GEOFENCE] Waived — GPS accuracy ${accuracy.toFixed(0)} m exceeds ${ACCURACY_WAIVE_M} m threshold.`);
+    if (accuracy > GEOFENCE_ACCURACY_WAIVE_M) {
+        console.log(`[GEOFENCE] Waived — GPS accuracy ${accuracy.toFixed(0)} m exceeds ${GEOFENCE_ACCURACY_WAIVE_M} m threshold.`);
         return { ok: true, skipped: true };
     }
-    const effectiveRadius = HARD_RADIUS_M + accuracy;
+    const effectiveRadius = GEOFENCE_RADIUS_M + accuracy;
     if (dist > effectiveRadius)
         return { ok: false, reason: `You are ${dist.toFixed(0)} m from the classroom (limit ${effectiveRadius.toFixed(0)} m). Move closer and try again.` };
     return { ok: true };
@@ -542,9 +563,8 @@ app.post('/api/verify-face', (req, res) => {
         return res.status(400).json({ error: 'descriptor must be a 128-element numeric array' });
     }
 
-    const THRESHOLD = 0.45;
     for (const entry of session.faceDescriptors) {
-        if (faceDistance(descriptor, entry.descriptor) < THRESHOLD) {
+        if (faceDistance(descriptor, entry.descriptor) < FACE_DISTANCE_THRESHOLD) {
             return res.json({ unique: false, matchedName: entry.name });
         }
     }
@@ -593,9 +613,8 @@ app.post('/api/biometric-connect', (req, res) => {
         return res.status(403).send('Face verification expired (5-minute limit). Please redo the face scan.');
 
     // ── Race-condition guard: re-check uniqueness at commit time ──────────────
-    const THRESHOLD = 0.45;
     for (const entry of session.faceDescriptors) {
-        if (faceDistance(pending.descriptor, entry.descriptor) < THRESHOLD)
+        if (faceDistance(pending.descriptor, entry.descriptor) < FACE_DISTANCE_THRESHOLD)
             return res.status(403).send(`Duplicate face detected — already registered as "${entry.name}". Proxy attendance is not allowed.`);
     }
 
@@ -782,14 +801,14 @@ app.post('/api/heartbeat', (req, res) => {
             return res.status(400).json({ error: 'GPS coordinates required for heartbeat' });
         const accuracy = parseFloat(req.body.accuracy) || 0;
         // Waive when GPS accuracy is too poor to make a reliable call
-        if (accuracy <= ACCURACY_WAIVE_M) {
+        if (accuracy <= GEOFENCE_ACCURACY_WAIVE_M) {
             const dist = calculateDistance(
                 session.targetLocation.latitude, session.targetLocation.longitude,
                 parseFloat(lat), parseFloat(lng)
             );
             if (dist === null || isNaN(dist))
                 return res.status(400).json({ error: 'Invalid GPS coordinates' });
-            const effectiveRadius = HARD_RADIUS_M + accuracy;
+            const effectiveRadius = GEOFENCE_RADIUS_M + accuracy;
             if (dist > effectiveRadius) {
                 attendee.leftEarly = true;
                 console.log(`[HEARTBEAT] ${matricule} left early — ${dist.toFixed(0)} m from classroom. Clock frozen at ${attendee.lastSeen}`);

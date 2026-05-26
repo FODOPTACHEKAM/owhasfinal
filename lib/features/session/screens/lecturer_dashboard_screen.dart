@@ -12,6 +12,7 @@ import '../../../widgets/dashboard/qr_code_section.dart';
 import '../../../widgets/dashboard/attendance_records_section.dart';
 import '../widgets/dashboard_app_bar.dart';
 import '../widgets/dashboard_body.dart';
+import '../../../config.dart';
 
 /// Live-session dashboard — reads [SessionStateNotifier], [AttendanceRecordNotifier],
 /// and [ReportNotifier]; [AttendanceProvider] is no longer used here.
@@ -39,7 +40,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
 
   void _startAutoRefresh() {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _refreshTimer = Timer.periodic(Duration(seconds: AppConfig.dashboardRefreshSeconds), (_) async {
       if (!mounted) { _refreshTimer?.cancel(); return; }
 
       final sn      = context.read<SessionStateNotifier>();

@@ -16,6 +16,7 @@ import 'features/session/notifiers/session_state_notifier.dart';
 import 'features/attendance/notifiers/attendance_record_notifier.dart';
 import 'features/reports/notifiers/report_notifier.dart';
 import 'features/home/notifiers/server_status_notifier.dart';
+import 'services/notification_service.dart';
 
 /// Non-singleton services shared across notifiers so they hold one consistent
 /// in-memory state (e.g. the session token set on ApiService).
@@ -34,6 +35,7 @@ void main() async {
     CourseService.seedFromManagement(),
     ServerConfig().detect(),
     CloudService().initialize(),
+    NotificationService().init(),
     Future.delayed(const Duration(seconds: 2)), // minimum splash duration
   ]);
   runApp(const MyApp());
