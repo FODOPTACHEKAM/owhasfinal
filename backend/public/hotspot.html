@@ -542,10 +542,7 @@ class FacePhotoManager {
 
         const biometrics = this._extractBiometrics(detection);
         this.descriptor  = biometrics.descriptor;
-        this.setStatus(
-            `Face captured — ~${biometrics.age} yr · ${biometrics.gender} · ` +
-            `${biometrics.dominantExpression} (${(biometrics.expressionScore * 100).toFixed(0)}%) ✓ Checking…`
-        );
+        this.setStatus('Face captured ✓ Checking…');
         this.onCaptured(biometrics);
     }
 
@@ -580,10 +577,7 @@ class FacePhotoManager {
 
         const biometrics = this._extractBiometrics(detection);
         this.descriptor  = biometrics.descriptor;
-        this.setStatus(
-            `Face captured — ~${biometrics.age} yr · ${biometrics.gender} · ` +
-            `${biometrics.dominantExpression} (${(biometrics.expressionScore * 100).toFixed(0)}%) ✓ Checking…`
-        );
+        this.setStatus('Face captured ✓ Checking…');
         this.onCaptured(biometrics);
     }
 
@@ -929,8 +923,7 @@ class AttendanceRegistrationApp {
             this.faceId         = result.faceId;       // one-time server token (valid 5 min)
             this.faceManager.stop();
             this._status(
-                `Face verified ✓  ~${biometrics.age} yr · ${biometrics.gender} · ` +
-                `${biometrics.dominantExpression} — fill in your details.`,
+                'Face verified ✓ — fill in your details.',
                 'success'
             );
             this._goToStep(2);
