@@ -8,6 +8,7 @@ import '../../../services/api_service.dart';
 import '../../../services/excel_service.dart';
 import '../../../services/face_recognition_service.dart';
 import '../../../services/server_config.dart';
+import '../../../services/notification_service.dart';
 
 /// Owns the session lifecycle: create → configure → end.
 ///
@@ -86,6 +87,13 @@ class SessionStateNotifier extends ChangeNotifier with LoadingMixin {
       );
       _serverWarning = null;
       _syncApiServiceSession();
+
+      final endsAt = _activeSession!.startTime
+          .add(Duration(minutes: durationMinutes));
+      await NotificationService().scheduleSessionEnd(
+        courseName: courseName,
+        endsAt:     endsAt,
+      );
 
       try {
         await _apiService.pushSessionConfig(
@@ -168,7 +176,12 @@ class SessionStateNotifier extends ChangeNotifier with LoadingMixin {
   }
 
   Future<void> _teardown() async {
-    final id = _activeSession!.id;
+    final id         = _activeSession!.id;
+    final courseName = _activeSession!.courseName;
+
+    List<AttendanceRecord> records = [];
+    try { records = await _storage.getAttendanceRecords(id); } catch (_) {}
+
     try { await _sessionService.endSession(id); } catch (e) { debugPrint('endSession: $e'); }
     try { await _storage.clearSessionData(id);  } catch (e) { debugPrint('clearData: $e');  }
     _faceService.clearSession(id);
@@ -177,6 +190,11 @@ class SessionStateNotifier extends ChangeNotifier with LoadingMixin {
     _previousAttendance = {};
     _serverWarning      = null;
     _sessionNumber      = 1;
+
+    NotificationService().showSessionEnded(
+      courseName:    courseName,
+      totalStudents: records.length,
+    );
   }
 
   // ── Network recovery ──────────────────────────────────────────────────────────

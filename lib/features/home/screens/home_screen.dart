@@ -137,7 +137,7 @@ class _HomeScreenState extends State<HomeScreen>
                             entranceDelay: 320,
                           ),
                           SizedBox(height: 14 * s),
-                          Text('Smart attendance · Powered by Wi-Fi hotspot',
+                          Text('Smart attendance · Powered by Wi-Fi zone',
                               style: TextStyle(fontSize: 11,
                                   color: Theme.of(context).colorScheme.onSurface
                                       .withValues(alpha: 0.28))),
@@ -187,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen>
             const Wrap(
               alignment: WrapAlignment.center, spacing: 6, runSpacing: 6,
               children: [
-                BadgePill(icon: Icons.wifi_off_rounded,      label: 'Offline-first', color: Color(0xFF1A3A6B)),
+                BadgePill(icon: Icons.wifi_off_rounded,      label: 'Offline-first', color: Color(0xFF27AE60)),
                 BadgePill(icon: Icons.verified_user_rounded, label: 'Secure',        color: Color(0xFF27AE60)),
                 BadgePill(icon: Icons.backup_rounded,        label: 'Cloud-based',   color: Color(0xFF27AE60)),
               ],
