@@ -379,7 +379,7 @@
                 <span>Register for Attendance</span>
             </button>
             <button class="button-secondary" id="backToFaceBtn" type="button">← Retake Photo</button>
-            <button class="button-gps" id="refreshGpsBtn" type="button">📍 Refresh GPS Location</button>
+            <button class="button-gps" id="refreshGpsBtn" type="button" style="display:none">📍 Refresh GPS Location</button>
             <div id="gpsBadge" style="display:none"></div>
         </section>
 
@@ -1022,6 +1022,7 @@ class AttendanceRegistrationApp {
             badge.textContent = `~ Very weak  ±${acc.toFixed(0)} m (will be accepted)`;
         }
         badge.style.display = 'flex';
+        this.el.refreshGpsBtn.style.display = 'none';
         this._status('Location saved — tap Register to submit.', 'success');
     }
 
@@ -1090,11 +1091,14 @@ class AttendanceRegistrationApp {
                 case 400: msg = 'Invalid details — check your name, Student ID, and email then try again.'; break;
                 case 403: {
                     const body = await r.text();
-                    msg = body.toLowerCase().includes('geofence')
-                        ? 'You appear to be outside the classroom. Move closer and try again.'
-                        : body.toLowerCase().includes('face')
-                            ? 'Face verification expired. Go back and retake your photo.'
-                            : body || 'Access denied. Please restart the registration process.';
+                    if (body.toLowerCase().includes('geofence')) {
+                        msg = 'You appear to be outside the classroom. Move closer and try again.';
+                        this.el.refreshGpsBtn.style.display = '';
+                    } else if (body.toLowerCase().includes('face')) {
+                        msg = 'Face verification expired. Go back and retake your photo.';
+                    } else {
+                        msg = body || 'Access denied. Please restart the registration process.';
+                    }
                     break;
                 }
                 case 404: msg = 'Session not found or expired. Ask your instructor to check the server.'; break;
@@ -1234,6 +1238,11 @@ class AttendanceRegistrationApp {
         }
         // Going back to PIN step: discard all face data so it can't be reused
         if (step === 0) { this.faceId = null; this.faceDescriptor = null; this.faceBiometrics = null; }
+        // Hide the GPS refresh button whenever leaving step 2
+        if (step !== 2) {
+            this.el.refreshGpsBtn.style.display = 'none';
+            this.el.gpsBadge.style.display = 'none';
+        }
 
         this.currentStep = step;
 
