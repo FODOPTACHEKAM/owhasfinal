@@ -983,7 +983,24 @@ function _openBrowser(url) {
     exec(cmd, (err) => { if (err) console.log('Could not auto-open browser:', err.message); });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
+// ── Unix socket setup ─────────────────────────────────────────────────────────
+// Read socket path from environment (PM2 will inject this).
+// Falls back to /tmp/owhas.sock if not set.
+const SOCKET = process.env.SOCKET || '/tmp/owhas.sock';
+
+// Remove any leftover socket file from a previous run; without this Node.js
+// throws "address already in use" on restart.
+if (fs.existsSync(SOCKET)) {
+    fs.unlinkSync(SOCKET);
+    console.log(`[Server] Removed stale socket: ${SOCKET}`);
+}
+
+const server = app.listen(SOCKET, () => {
+    // Nginx runs as www-data — chmod 777 lets it read the socket.
+    // Must happen AFTER listen() creates the file.
+    fs.chmodSync(SOCKET, '777');
+    console.log(`[Worker ${process.pid}] Listening on socket: ${SOCKET}`);
+
     _logStartup('http', PORT);
     _addFirewallRule(PORT, 'OwHAS Attendance 5501', 'TCP');
     // Skip browser auto-open on the headless university server (SERVER_IP set).
@@ -992,6 +1009,22 @@ app.listen(PORT, '0.0.0.0', () => {
     _startDnsServer();     // owhas.lan   — needs port 53 free (best-effort)
     _startHttp80Redirect();
     if (SERVER_IP) _startDhcpServer(); // VLAN mode: advertise our IP as DNS via DHCP
+});
+
+// Clean up the socket file on graceful shutdown.
+process.on('SIGTERM', () => {
+    server.close(() => {
+        if (fs.existsSync(SOCKET)) fs.unlinkSync(SOCKET);
+        console.log(`[Worker ${process.pid}] Shutdown complete`);
+        process.exit(0);
+    });
+});
+
+process.on('SIGINT', () => {
+    server.close(() => {
+        if (fs.existsSync(SOCKET)) fs.unlinkSync(SOCKET);
+        process.exit(0);
+    });
 });
 
 // ══════════════════════════════════════════════════════════════════
