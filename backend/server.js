@@ -12,6 +12,7 @@ const { randomUUID } = require('crypto');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
+app.set('trust proxy', 1); // trust Cloudflare / Nginx reverse proxy
 
 // ====== Rate limiting — prevent brute-force PIN guessing ======
 const pinLimiter = rateLimit({
@@ -59,7 +60,7 @@ const PORT = 5501;
 //
 //  To switch modes: change this one line and restart.
 //  See WLAN.md for the full university deployment guide.
-const SERVER_IP = null;   // ← set to e.g. '10.50.1.5' for university VLAN
+const SERVER_IP = process.env.SERVER_IP || null;
 
 // ── GPS geofencing (online sessions only) ─────────────────────────
 //  Classroom radius in metres. A student must be within this distance
@@ -983,38 +984,45 @@ function _openBrowser(url) {
     exec(cmd, (err) => { if (err) console.log('Could not auto-open browser:', err.message); });
 }
 
-// ── Unix socket setup ─────────────────────────────────────────────────────────
-// Read socket path from environment (PM2 will inject this).
-// Falls back to /tmp/owhas.sock if not set.
-const SOCKET = process.env.SOCKET || '/tmp/owhas.sock';
+// ── Listen: Unix socket (when SOCKET env is set) or TCP port ─────────────────
+// School server (Nginx → socket):  set SOCKET=/tmp/owhas.sock in PM2 env.
+// Cloud server (Nginx → port 5501): leave SOCKET unset → falls back to TCP.
+const SOCKET = process.env.SOCKET || null;
 
-// Remove any leftover socket file from a previous run; without this Node.js
-// throws "address already in use" on restart.
-if (fs.existsSync(SOCKET)) {
-    fs.unlinkSync(SOCKET);
-    console.log(`[Server] Removed stale socket: ${SOCKET}`);
-}
-
-const server = app.listen(SOCKET, () => {
-    // Nginx runs as www-data — chmod 777 lets it read the socket.
-    // Must happen AFTER listen() creates the file.
-    fs.chmodSync(SOCKET, '777');
-    console.log(`[Worker ${process.pid}] Listening on socket: ${SOCKET}`);
-
+function _onListening() {
     _logStartup('http', PORT);
     _addFirewallRule(PORT, 'OwHAS Attendance 5501', 'TCP');
-    // Skip browser auto-open on the headless university server (SERVER_IP set).
     if (!SERVER_IP) _openBrowser('http://' + detectedHotspotIP + ':' + PORT + '/public/hotspot.html');
-    _startMdnsResponder(); // owhas.local — no port-53 conflicts
-    _startDnsServer();     // owhas.lan   — needs port 53 free (best-effort)
+    _startMdnsResponder();
+    _startDnsServer();
     _startHttp80Redirect();
-    if (SERVER_IP) _startDhcpServer(); // VLAN mode: advertise our IP as DNS via DHCP
-});
+    if (SERVER_IP) _startDhcpServer();
+}
+
+let server;
+if (SOCKET) {
+    // Remove stale socket file so Node.js doesn't throw EADDRINUSE on restart.
+    if (fs.existsSync(SOCKET)) {
+        fs.unlinkSync(SOCKET);
+        console.log(`[Server] Removed stale socket: ${SOCKET}`);
+    }
+    server = app.listen(SOCKET, () => {
+        // Nginx (www-data) needs read access to the socket file.
+        fs.chmodSync(SOCKET, '777');
+        console.log(`[Worker ${process.pid}] Listening on socket: ${SOCKET}`);
+        _onListening();
+    });
+} else {
+    server = app.listen(PORT, '0.0.0.0', () => {
+        console.log(`[Worker ${process.pid}] Listening on port: ${PORT}`);
+        _onListening();
+    });
+}
 
 // Clean up the socket file on graceful shutdown.
 process.on('SIGTERM', () => {
     server.close(() => {
-        if (fs.existsSync(SOCKET)) fs.unlinkSync(SOCKET);
+        if (SOCKET && fs.existsSync(SOCKET)) fs.unlinkSync(SOCKET);
         console.log(`[Worker ${process.pid}] Shutdown complete`);
         process.exit(0);
     });
@@ -1022,7 +1030,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     server.close(() => {
-        if (fs.existsSync(SOCKET)) fs.unlinkSync(SOCKET);
+        if (SOCKET && fs.existsSync(SOCKET)) fs.unlinkSync(SOCKET);
         process.exit(0);
     });
 });

@@ -41,13 +41,20 @@ Students connect to this hotspot and register their attendance through a
 mobile browser — no app installation required on the student side.
 
 The system supports three operational modes: fully offline (LAN hotspot),
-fully online (cloud server at `owhas.org`), and hybrid (both simultaneously
-under the same session PIN). It incorporates browser-based face recognition
-for anti-proxy detection, a 4-digit PIN for session authentication, GPS
-geolocation with periodic heartbeat confirmation for online sessions, a
-captive portal for automatic page display upon Wi-Fi connection, digital
-signature capture, Firebase cloud backup, cumulative attendance tracking
+fully online (cloud server at `owhas.org`), and hybrid (local school server
+reachable alongside the cloud simultaneously). It incorporates browser-based
+face recognition for anti-proxy detection using five `face-api.js` models, a
+4-digit PIN for session authentication, GPS geolocation with periodic heartbeat
+confirmation for online sessions, a contextual GPS refresh button that appears
+on geofence errors to let students re-verify their position without restarting
+registration, a captive portal for automatic page display upon Wi-Fi connection,
+digital signature capture, Firebase cloud backup, cumulative attendance tracking
 across multiple sessions, and automated PDF and Excel report generation.
+
+The system has been deployed at two infrastructure levels: a permanent cloud
+server at `owhas.org` (AWS EC2, Ubuntu, Nginx, Cloudflare, Let's Encrypt) and
+an institutional VLAN server at ICTU (`atd.ictu.loc`, accessible on the school
+network at `10.13.14.164`).
 
 ---
 
@@ -189,13 +196,13 @@ OwHAS directly addresses each of these problems:
 │                    ▼                                             │
 │         ┌──────────────────────┐   Internet (infrastructure)    │
 │         │ OwHAS Server         │ ─────────────────────────────► │
-│         │ 10.50.1.5 (static)   │                  owhas.org     │
-│         │ DHCP + DNS for VLAN  │ ◄─── remote student records ── │
-│         │ TCP 80, 5501         │                                 │
-│         │ UDP 53, 5353         │                                 │
+│         │ atd.ictu.loc         │                  owhas.org     │
+│         │ IP: 10.13.14.164     │                                 │
+│         │ Nginx (port 80/443)  │                                 │
+│         │ Node.js via socket   │                                 │
 │         └──────────────────────┘                                │
-│   In-class students → server  ·  Remote students → owhas.org    │
-│   Records from both merged at session end into one PDF/Excel     │
+│   In-class students → atd.ictu.loc  ·  Lecturer app → same      │
+│   Flutter detects http://atd.ictu.loc at startup automatically   │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
@@ -251,6 +258,8 @@ OwHAS directly addresses each of these problems:
 | google_fonts | ^4.0.4 | Typography |
 | uuid | ^4.5.3 | UUID generation for session and record IDs |
 | intl | ^0.20.2 | Date and number formatting |
+| flutter_local_notifications | ^18.0.0 | Local push notifications for session end |
+| timezone | ^0.9.0 | Timezone-aware scheduling for local notifications |
 
 ### Backend Server (Node.js)
 
@@ -305,6 +314,10 @@ lib/
 │   ├── semester.dart           Semester with equality for picker widgets
 │   └── catalogue_course.dart   Course linked to a semester
 │
+├── config.dart                     Central constants: cloudUrl, serverPort,
+│                                   faceMatchThreshold (0.82), dashboardRefreshSeconds,
+│                                   session UI defaults; single place to tune the app
+│
 ├── services/
 │   ├── session_service.dart            PIN generation, session lifecycle, server init, resync
 │   ├── storage_service.dart            SharedPreferences CRUD for sessions, records, students
@@ -319,6 +332,8 @@ lib/
 │   ├── network_discovery_service.dart  Subnet scan to count active hotspot devices
 │   ├── cloud_service.dart              Firebase Auth + Firestore sync
 │   ├── location_service.dart           GPS collection wrapper (geolocator)
+│   ├── notification_service.dart       Local push notifications for session end (scheduled
+│   │                                   at creation, cancelled + replaced on manual end)
 │   └── device_service.dart             Device fingerprint generation (device_info_plus)
 │
 ├── features/
@@ -413,16 +428,27 @@ name and lecturer are shown and the student advances to the face step.
 **Step 1 — Face Verification:**
 The page uses `<input type="file" capture="user">` to open the native
 Android/iOS camera without requiring HTTPS or `getUserMedia`. After the
-student takes a selfie, `face-api.js` runs three models (TinyFaceDetector,
-FaceLandmark68Net, FaceRecognitionNet) locally in the browser to extract
-a 128-dimension descriptor. The descriptor is sent to `POST /api/verify-face`,
-which checks it against all descriptors already registered in the session
-(Euclidean distance threshold 0.6). If a match is found, registration is
-blocked and the matched student's name is shown. If unique, a one-time
-`faceId` token is issued (valid 5 minutes).
+student takes a selfie, `face-api.js` runs five models locally in the browser:
+TinyFaceDetector (detection), FaceLandmark68Net (68 landmarks), FaceRecognitionNet
+(128-dimension descriptor), AgeGenderNet (estimated age and gender), and
+FaceExpressionNet (emotion probabilities). The 128-dimension descriptor is
+sent to `POST /api/verify-face`. Age, gender, and expression estimates are
+captured and included in the submission payload for optional server-side
+logging, but are **not displayed to the student** — the status message shows
+only `'Face captured ✓ Checking…'` to avoid exposing biometric analysis.
+The server checks the descriptor against all descriptors already registered in
+the session (Euclidean distance threshold 0.6). If a match is found,
+registration is blocked and the matched student's name is shown. If unique, a
+one-time `faceId` token is issued (valid 5 minutes).
 
 **Step 2 — Personal Details:**
 The student fills in: Full Name, Matricule (Student ID), and Email.
+A **GPS status badge** shows the current location accuracy. If the server
+returns a 403 Geofence error during submission (student is outside the 50 m
+classroom radius), a **Refresh GPS** button appears below the form. Tapping
+it re-acquires GPS silently and updates the badge without navigating away.
+The button hides again after a successful re-acquisition or when the student
+moves to a different step.
 
 **Submission:**
 On "Register for Attendance", the page:
@@ -514,6 +540,14 @@ Long-pressing a tile shows a removal confirmation dialog.
 - Download PDF (saves to device Downloads folder)
 - More menu (⋮): Digital Signature, Add Manual Student, End Session
 
+**Session End Notifications:**
+When a session is created, `NotificationService` schedules a local push
+notification at the exact session expiry time. If the lecturer ends the
+session manually before expiry, the scheduled notification is cancelled and
+an immediate one is shown with the final student count. This ensures exactly
+one notification per session regardless of how it ends, and the notification
+fires even if the app is in the background.
+
 ### 8d. Student Registration Page (`/register`) — App-Side Flow
 
 This page is for students using the OwHAS Flutter app directly, as an
@@ -604,68 +638,70 @@ attendance totals. Export as PDF or Excel available per session.
   wall-clock elapsed time.
 - QR code URL: `https://owhas.org/public/hotspot.html?s=<token>`
 
-### 9c. Hybrid Mode (Both Simultaneously)
+### 9c. Hybrid Mode (Local + Cloud Both Reachable)
 
-- Both local server and cloud are running under the same session PIN.
-- `ServerConfig.detect()` picks the local server first (faster LAN response).
-- Hotspot students register on the LAN server; remote students register
-  on the cloud.
-- At "End Session," the Flutter app queries both servers, merges records
-  by matricule (online record wins ties — it carries GPS validation), and
-  exports a single unified PDF/Excel with a `Source` column (offline /
-  online). No GPS coordinates appear in any export.
+Hybrid is detected when `ServerConfig.detect()` finds both a local LAN server
+and `owhas.org` reachable in the same scan pass. This is the normal state
+when the lecturer's phone is on the school Wi-Fi and has mobile data or
+internet simultaneously (e.g. ICTU staff network).
 
-### 9d. Institutional VLAN Mode (IT-Managed Infrastructure)
+- `baseUrl` is set to the local server (faster, lower latency than cloud).
+- `isOnline = false`, `isHybrid = true`.
+- The lecturer dashboard shows a **purple** "Hybrid Network" chip with the
+  local IP + "cloud" sublabel.
+- **Students must still be on the school Wi-Fi** — the QR code encodes the
+  local URL; the cloud is not used for student registration in this mode.
+- The `serverWarning` banner does not appear (local server is reachable).
 
-This is the production deployment model for universities that assign a
-dedicated VLAN to OwHAS, managed entirely by the IT department.
+The hybrid flag is purely a status indicator. In the current implementation
+the app communicates only with the local server during the session; the cloud
+server is detected but not used for a parallel registration path.
 
-**Network layout:**
-- A VLAN is provisioned on subnet `10.50.1.x`, spanning all equipped
-  classrooms. Two SSIDs are broadcast on this VLAN:
-  - `ICTU_ATD` — open (no password), reserved for students. Traffic is
-    restricted to the OwHAS server only (`10.50.1.5`); no internet breakout.
-  - `ICTU_ATD_STAFF` — password-protected, reserved for lecturers.
-    Traffic reaches both the OwHAS server and the open internet.
+### 9d. Institutional VLAN Mode (School Network Deployment)
 
-**Server role:**
-- A dedicated machine holds the static IP `10.50.1.5`.
-- It acts as DHCP server and DNS resolver for the VLAN (not for the
-  university's main network).
-- Required open ports (inbound, within the VLAN):
-  - `TCP 80` — captive portal redirect
-  - `TCP 5501` — main OwHAS attendance server
-  - `UDP 53` — LAN DNS hostname (`owhas.lan`)
-  - `UDP 5353` — mDNS hostname (`owhas.local`)
-- The server also requires outbound internet access (via the university's
-  uplink) to synchronise completed sessions to `owhas.org` at session end.
+This is the production deployment model for universities. OwHAS has been
+deployed at ICTU on the school's existing network infrastructure.
+
+**Current ICTU deployment:**
+- Server hostname: `atd.ictu.loc` (accessible to any device on school Wi-Fi)
+- Server IP: `10.13.14.164` (static assignment within the school network)
+- Nginx handles virtual-host routing — requests with `Host: atd.ictu.loc`
+  are forwarded to the Node.js process via a Unix socket (`/tmp/owhas.sock`)
+- Node.js listens on the Unix socket when the `SOCKET` environment variable
+  is set; falls back to TCP port 5501 otherwise
+- `SERVER_IP=10.13.14.164` is set in the PM2 ecosystem config, enabling the
+  DHCP server to bind to the correct interface
 
 **Registration flow:**
-- Students connect to `ICTU_ATD`. The server's captive portal (port 80)
-  intercepts the OS connectivity probe and redirects to `hotspot.html`
-  automatically — identical to the personal-hotspot experience but on
-  university-managed infrastructure.
-- Lecturers connect to `ICTU_ATD_STAFF`. The Flutter app communicates
-  with the server at `10.50.1.5:5501` for session management, and
-  simultaneously with `owhas.org` for remote students.
-- Remote students (not physically present) register directly on
-  `owhas.org` using the same 4-digit session PIN.
-- At session end, both the local server (`10.50.1.5`) and the cloud
-  (`owhas.org`) are queried; records are merged by matricule and exported
-  as a single unified attendance list.
+- Students and lecturers connect to the school Wi-Fi.
+- The Flutter app auto-detects `http://atd.ictu.loc` during startup scan
+  (it is included as a fixed candidate in `server_config.dart`).
+- The QR code on the lecturer's dashboard encodes
+  `http://atd.ictu.loc/public/hotspot.html?s=<token>`.
+- Students open this URL in their browser; the captive portal on port 80
+  also triggers the "Sign in to network" popup automatically.
 
 **Server auto-detection:**
-`ServerConfig.detect()` will find `10.50.1.5:5501` during the LAN subnet
-scan if the phone is connected to either SSID. No configuration change is
-needed in the Flutter app — detection is automatic.
+`ServerConfig.detect()` includes `http://atd.ictu.loc` as the first fixed
+candidate in the parallel local scan. Because Nginx listens on port 80 (the
+default HTTP port), no port suffix is needed in the URL — this is why the
+hostname is used instead of a direct IP:port, which would bypass Nginx's
+virtual-host routing and reach the wrong vhost.
+
+**Unix socket configuration (server.js):**
+```bash
+# PM2 ecosystem.config.js or direct PM2 start
+SOCKET=/tmp/owhas.sock SERVER_IP=10.13.14.164 node server.js
+```
+On startup, if `SOCKET` is set, Node.js removes any stale socket file,
+listens on it, and sets permissions to `777` so Nginx (running as `www-data`)
+can connect. `SIGTERM` / `SIGINT` handlers clean up the socket file on shutdown.
 
 **Advantages over the personal-hotspot model:**
-- No limit on concurrent connected devices (replaces Windows Mobile
-  Hotspot's ~8-device cap).
-- Persistent server (always on, no laptop required to host the hotspot).
-- Controlled network separation — students cannot access the internet or
-  any other university resource while on `ICTU_ATD`.
-- Clean institutional ownership of attendance infrastructure.
+- No device limit (replaces Windows Mobile Hotspot's ~8-device cap).
+- Persistent server — always on, no lecturer laptop needs to host a hotspot.
+- Students join the existing school Wi-Fi; no additional network needed.
+- Zero configuration difference for the lecturer — same Flutter app workflow.
 
 ---
 
@@ -815,6 +851,11 @@ needed in the Flutter app — detection is automatic.
   the Haversine formula. Distance > 50 m → 403 Geofence Error.
 - GPS coordinates are validated and immediately discarded. They are not
   stored in any attendance record and do not appear in any export.
+- On a 403 Geofence Error, a **Refresh GPS** button appears on the form.
+  The student can tap it to silently re-acquire their GPS position and
+  retry without navigating back to step 0. The button hides after a
+  successful refresh or when the student leaves step 2. This reduces
+  friction caused by cold GPS starts on devices with weak satellite signal.
 
 ### 11f. GPS Heartbeat Presence Enforcement (Online Mode)
 
@@ -882,24 +923,35 @@ presence without any additional check. There is no mechanism to connect to
 
 ### 12a. Models Used
 
-**Browser-side (hotspot.html):**
-- `TinyFaceDetector` — lightweight model optimised for mobile browsers.
+**Browser-side (hotspot.html) — 5 models:**
+- `TinyFaceDetector` — lightweight face detection optimised for mobile browsers.
   Input size: 320, score threshold: 0.45.
 - `FaceLandmark68Net` — detects 68 facial landmarks.
-- `FaceRecognitionNet` — produces the 128-dimension descriptor vector.
-- All three models are served locally from `backend/public/models/`,
+- `FaceRecognitionNet` — produces the 128-dimension descriptor used for
+  duplicate checking. This is the only model output sent to the server.
+- `AgeGenderNet` — estimates the subject's age and biological gender.
+- `FaceExpressionNet` — produces probabilities for 7 emotion classes.
+- All five models are served locally from `backend/public/models/`,
   downloaded once by running `node setup.js`.
+- **UI note:** Age, gender, and expression estimates are captured and included
+  in the registration payload but are not displayed to the student. The status
+  message shows only `'Face captured ✓ Checking…'`.
 
 **App-side (FaceCapturePage):**
-- `google_mlkit_face_detection` — Google's on-device ML Kit.
-- Face region is cropped and processed by the `image` package to extract
-  the descriptor.
+- `google_mlkit_face_detection` — Google's on-device ML Kit with `accurate`
+  performance mode and contour detection enabled.
+- A 456-value descriptor is built: 200 normalised geometric values from
+  7 ML Kit contour types (face outline, eyes, nose, lips) plus a 256-value
+  average-hash of the 16×16 face crop. This descriptor is compared using
+  **cosine similarity** with a threshold of `0.82` (configurable in
+  `lib/config.dart → AppConfig.faceMatchThreshold`).
 
 ### 12b. Duplicate Detection Algorithm
 
+**Browser path (hotspot.html → Node.js server):**
 ```
-For each new descriptor D_new submitted at registration:
-  For each D_existing already in session.faceDescriptors:
+For each new 128-dim descriptor D_new:
+  For each D_existing in session.faceDescriptors:
     dist = sqrt( Σ (D_new[i] − D_existing[i])² )   [Euclidean distance]
     if dist < 0.6:
       return { unique: false, matchedName: D_existing.name }
@@ -907,9 +959,22 @@ For each new descriptor D_new submitted at registration:
     issue one-time faceId token
     return { unique: true, faceId }
 ```
-
-The 0.6 threshold is the standard value for face-api.js. Values below 0.6
+The 0.6 threshold is the standard value for `face-api.js`. Values below 0.6
 are considered the same person.
+
+**App path (Flutter StudentRegistrationPage → FaceRecognitionService):**
+```
+For each new 456-value descriptor D_new:
+  For each D_existing in _sessions[sessionId]:
+    similarity = cosine_similarity(D_new, D_existing)
+    if similarity >= 0.82:   // AppConfig.faceMatchThreshold
+      return matchedStudentName
+  If no match:
+    store descriptor, allow registration
+```
+Cosine similarity of 1.0 = identical vectors; 0.82 was chosen to balance
+rejection of near-duplicates while tolerating descriptor noise from
+low-resolution cameras.
 
 ### 12c. Two-Step Commit Protocol
 
@@ -1009,24 +1074,43 @@ if needed).
 `detect()` is called once in `main.dart` before the first screen is shown.
 It runs in a background isolate (`compute()`) to avoid UI jank.
 
-It scans in four sequential blocks, stopping at the first success:
+Detection is **cloud-first** — the most common production case (owhas.org) is
+checked before the expensive subnet scan:
 
-| Block | Addresses | Timeout | Sets |
+| Step | What | Timeout | Result |
 |---|---|---|---|
-| 1+2 — Local subnet scan | 767 IPs (5 fixed + 3 × 254 subnet) | 800 ms | `isOnline = false` |
-| 3 — Emulator loopback | `10.0.2.2:5501` | 800 ms | `isOnline = false` |
-| 4 — Cloud server | `https://owhas.org/ping` | 2000 ms | `isOnline = true` |
-| Fallback | — | — | `baseUrl = 192.168.137.1:5501, isOnline = false` |
+| 1 — Cloud first | `https://owhas.org/ping` | 2 s | `isOnline=true` → done |
+| 2 — Parallel local + cloud | 768 LAN addresses (all at once) + cloud future concurrently | 800 ms local / 3 s cloud | hybrid / local / cloud |
+| 3 — Emulator loopback | `http://10.0.2.2:5501/ping` (if no local found yet) | 800 ms | `isOnline=false` |
+| 4 — Hybrid resolution | Collect parallel cloud result from step 2 | — | hybrid if both; local-only or cloud-only otherwise |
+| 5 — Slow 4G retry | `https://owhas.org/ping` | 5 s | `isOnline=true` |
+| 6 — HTTP direct fallback | `http://owhas.org:5501/ping` (port 443 blocked?) | 5 s | `isOnline=true` |
+| 7 — Last resort | `https://owhas.org/ping` | 5 s | `isOnline=true` |
+| Fallback | — | — | `baseUrl=http://192.168.137.1:5501, isOnline=false` |
 
-The fixed candidates in block 1 include:
-- `192.168.137.1:5501` — Windows Mobile Hotspot gateway (default)
-- `10.50.1.5:5501` — Institutional VLAN server (university-managed)
+**Fixed candidates in the parallel local scan (step 2):**
+- `http://atd.ictu.loc` — ICTU university server (Nginx on port 80)
+- `http://192.168.137.1:5501` — Windows Mobile Hotspot (default)
+- `http://10.0.0.1:5501`
+- `http://192.168.43.1:5501` — Android hotspot
+- `http://172.20.10.1:5501` — iOS hotspot
+- `http://192.168.50.1:5501`
 
-Both are tried in the same parallel scan pass; whichever responds first is
-used. No configuration change is needed when switching between a personal
-hotspot and the institutional VLAN deployment.
+**Subnet candidates (step 2, all parallel with the same 800 ms deadline):**
+- `http://192.168.0.1–254:5501` (254 IPs)
+- `http://192.168.1.1–254:5501` (254 IPs)
+- `http://10.0.0.1–254:5501` (254 IPs)
+- Total: 6 fixed + 762 subnet = **768 LAN addresses**
 
-Total worst-case time if nothing is found: 800 + 800 + 2000 = 3600 ms.
+**Hybrid resolution (step 4):**
+If both a local address responds AND the cloud future returns `true`, the
+result is `isHybrid = true`, `isOnline = false`, `baseUrl = localUrl`.
+The local server is preferred for lower latency.
+
+Worst-case time if nothing responds at all: 2 + 3 + 0.8 + 5 + 5 + 5 ≈ **21 s**.
+Typical time in the most common cases:
+- Cloud only → ~2 s (step 1)
+- School VLAN (`atd.ictu.loc`) → ~800 ms (step 2 local scan)
 
 ### 14b. The `_hasDetected` Cache
 
@@ -1073,6 +1157,32 @@ SharedPreferences data is always the source of truth.
 
 Signed-in lecturers can view all historical sessions from any device. Each
 session shows date, course, and attendance totals with PDF/Excel export.
+
+### 15d. owhas.org Infrastructure
+
+The production cloud server runs at `https://owhas.org` on the following stack:
+
+| Layer | Details |
+|---|---|
+| Hosting | AWS EC2 (Ubuntu), IP `13.60.208.80` |
+| Process manager | PM2 — keeps Node.js alive after SSH logout, auto-restarts on crash |
+| Reverse proxy | Nginx — port 80 and 443 → `http://localhost:5501` |
+| CDN / DDoS proxy | Cloudflare (orange cloud, Full SSL mode) |
+| TLS certificate | Let's Encrypt via `certbot --nginx`, auto-renews every 90 days |
+| Trust proxy | `app.set('trust proxy', 1)` in `server.js` so that `express-rate-limit` reads the real client IP from Cloudflare's `X-Forwarded-For` header |
+
+**SSL chain:**
+```
+Student browser → Cloudflare HTTPS (port 443)
+                → Nginx origin HTTPS (port 443, Let's Encrypt cert)
+                → Node.js HTTP (localhost:5501)
+```
+
+**Why `trust proxy` matters:**
+Without it, `express-rate-limit` throws `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`
+when it sees Cloudflare's `X-Forwarded-For` header and exits immediately —
+causing PM2 crash loops. Setting `trust proxy: 1` tells Express to trust
+exactly one proxy hop (Cloudflare) and extract the real IP from the header.
 
 ---
 
@@ -1182,60 +1292,82 @@ add a persistent database.
 
 ### Option 4 — VPS with HTTPS (Full Control, ~$5/month)
 
-DigitalOcean, Hetzner, or Linode with Caddy as a reverse proxy:
+**Current production setup (owhas.org):**
 
+| Component | Details |
+|---|---|
+| Provider | AWS EC2, Ubuntu |
+| Process manager | `pm2 start server.js --name owhas` |
+| Reverse proxy | Nginx (ports 80 + 443 → `localhost:5501`) |
+| SSL | `sudo certbot --nginx -d owhas.org` (Let's Encrypt, auto-renews) |
+| CDN | Cloudflare proxy (Full SSL mode) |
+
+Nginx site config (`/etc/nginx/sites-enabled/owhas`):
+```nginx
+server {
+    listen 80;
+    server_name owhas.org www.owhas.org;
+    location / { proxy_pass http://localhost:5501; }
+}
+# certbot --nginx adds listen 443 ssl block automatically
+```
+
+Must set `app.set('trust proxy', 1)` in `server.js` when Cloudflare is in
+front; otherwise `express-rate-limit` crashes on startup.
+
+**Alternative: Caddy (simpler SSL automation):**
 ```
 owhas.yourdomain.com {
     reverse_proxy localhost:5501
 }
 ```
+Caddy auto-provisions Let's Encrypt. No separate certbot step needed.
 
-Caddy auto-provisions a Let's Encrypt SSL certificate. Use PM2 to keep
-the server alive after SSH logout.
+### Option 5 — Institutional School Network (ICTU Deployment)
 
-### Option 5 — Institutional VLAN (IT Department Setup)
+**Current ICTU deployment:**
 
-The production deployment model for universities. Requires a one-time
-network configuration request addressed to the IT department.
+| Item | Value |
+|---|---|
+| Hostname | `atd.ictu.loc` |
+| IP | `10.13.14.164` (school network) |
+| Web server | Nginx (port 80), virtual host `atd.ictu.loc` |
+| App server | Node.js via Unix socket `/tmp/owhas.sock` |
+| Process manager | PM2 |
 
-**What the IT department must provision:**
+**PM2 start command:**
+```bash
+pm2 start server.js --name owhas \
+  --env SERVER_IP=10.13.14.164 \
+  --env SOCKET=/tmp/owhas.sock
+```
 
-1. A dedicated VLAN on subnet `10.50.1.x`, broadcast across all
-   classroom access points under two SSIDs:
-   - `ICTU_ATD` — open, students only
-   - `ICTU_ATD_STAFF` — password-protected, lecturers only
-
-2. Differentiated traffic policy:
-   - `ICTU_ATD` → OwHAS server (`10.50.1.5`) only; internet blocked
-   - `ICTU_ATD_STAFF` → OwHAS server + full internet
-
-3. The OwHAS server (`10.50.1.5`) to serve as DHCP and DNS within
-   this VLAN only — not affecting the university's main DNS.
-
-4. The following ports open inbound within the VLAN:
-   - `TCP 80` — captive portal (auto-opens `hotspot.html` on connect)
-   - `TCP 5501` — OwHAS attendance server
-   - `UDP 53` — LAN DNS (`owhas.lan`)
-   - `UDP 5353` — mDNS (`owhas.local`)
-
-5. A static IP (`10.50.1.5`) assigned to the OwHAS server machine,
-   with outbound internet access so it can sync completed sessions
-   to `owhas.org` at session end.
+**Nginx virtual host config:**
+```nginx
+server {
+    listen 80;
+    server_name atd.ictu.loc;
+    location / {
+        proxy_pass http://unix:/tmp/owhas.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
 
 **What stays the same for the lecturer:**
-- Open the Flutter app — server detected automatically at `10.50.1.5`.
+- Open the Flutter app on school Wi-Fi — `atd.ictu.loc` detected automatically.
 - Start the session, share the PIN, monitor the dashboard as normal.
-- Students connect to `ICTU_ATD` (no password) and are redirected to
-  `hotspot.html` automatically via the captive portal.
-- Remote students use `owhas.org` with the same PIN.
-- End the session — records from both sources merge into one report.
+- Students connect to the school Wi-Fi and scan the QR code or type
+  `atd.ictu.loc` in their browser. The captive portal auto-redirects them.
 
-**Advantages:**
-- No device limit (replaces the ~8-device cap of Windows Mobile Hotspot).
-- Server is always on — no laptop needs to run the hotspot.
-- Clean network isolation: students cannot reach the internet or other
-  university systems while on `ICTU_ATD`.
-- Zero configuration difference from the lecturer's perspective.
+**Planned full VLAN isolation (future IT-managed model):**
+For full traffic isolation (students blocked from internet), the IT department
+would provision a dedicated VLAN with two SSIDs:
+- `ICTU_ATD` — open, students only, internet blocked, server-only access
+- `ICTU_ATD_STAFF` — password-protected, lecturers, full internet
+Server holds a static IP on the VLAN subnet, acts as DHCP + DNS for that VLAN,
+and the Flutter app detects it automatically via the same fixed-candidate scan.
 
 ---
 
@@ -1348,8 +1480,22 @@ The captive portal mechanism (port-80 redirect, mDNS `owhas.local`, DNS
 Wi-Fi is the only action required to reach the registration page, with no
 URL typing necessary.
 
+The project has been deployed at two infrastructure levels simultaneously:
+a permanent cloud server at `owhas.org` (AWS EC2, Nginx, Cloudflare, Let's
+Encrypt TLS) and an institutional server at ICTU (`atd.ictu.loc`,
+`10.13.14.164`), accessed via Nginx virtual-host routing over a Unix socket.
+The Flutter app detects both deployments automatically at startup with no
+configuration required.
+
+Small UX improvements compound the anti-proxy guarantees: biometric analysis
+(age, gender, expression) is captured for server-side enrichment but hidden
+from the student-facing UI to avoid exposing sensitive estimates; and a
+contextual GPS Refresh button appears only when a geofence error occurs,
+reducing friction for students in poor-GPS environments without weakening
+the physical-presence check.
+
 The project was built entirely with open-source and free-tier tools, making
-it immediately deployable by any educational institution at zero
+it immediately deployable by any educational institution at minimal
 infrastructure cost.
 
 ---
@@ -1359,4 +1505,4 @@ infrastructure cost.
 *Developer: FODOPTACHEKAM*
 *Platform: Flutter (Android / iOS) + Node.js*
 *Version: 1.0.0*
-*Date: May 2026*
+*Date: June 2026*

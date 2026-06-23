@@ -202,7 +202,7 @@ class _HomeScreenState extends State<HomeScreen>
       subtitle:    sn.hasActiveSession
           ? 'Active session: ${sn.activeSession!.courseName}'
           : 'Create and manage attendance sessions',
-      icon:        Icons.school_rounded,
+      icon:        Icons.menu_book_rounded,
       accentColor: const Color(0xFF1A3A6B),
       onTap:       () => _handleLecturerTap(ctx),
       entranceDelay: 180,

@@ -379,7 +379,7 @@
                 <span>Register for Attendance</span>
             </button>
             <button class="button-secondary" id="backToFaceBtn" type="button">← Retake Photo</button>
-            <button class="button-gps" id="refreshGpsBtn" type="button" style="display:none">📍 Refresh GPS Location</button>
+            <button class="button-gps" id="refreshGpsBtn" type="button" style="display:none">Refresh GPS Location</button>
             <div id="gpsBadge" style="display:none"></div>
         </section>
 
@@ -955,9 +955,10 @@ class AttendanceRegistrationApp {
                 position = await this._getLocation();
                 if (!position && this._sessionRequiresGps) {
                     this._status(
-                        'GPS signal not found. Tap "📍 Refresh GPS Location" below and wait a few seconds, then try again.',
+                        'GPS signal not found. Tap "Refresh GPS Location" below and wait a few seconds, then try again.',
                         'error'
                     );
+                    this.el.refreshGpsBtn.style.display = '';
                     this._btnLoading(this.el.submitBtn, false, 'submit');
                     return;
                 }
@@ -985,14 +986,13 @@ class AttendanceRegistrationApp {
         const btn   = this.el.refreshGpsBtn;
         const badge = this.el.gpsBadge;
         btn.disabled = true;
-        btn.querySelector ? btn.textContent = '📍 Getting location…' : null;
-        btn.textContent = '📍 Getting location…';
+        btn.textContent = 'Getting location…';
         badge.style.display = 'none';
 
         const pos = await this._getLocation(20000);
 
         btn.disabled = false;
-        btn.textContent = '📍 Refresh GPS Location';
+        btn.textContent = 'Refresh GPS Location';
 
         if (!pos) {
             badge.className = 'gps-badge fail';

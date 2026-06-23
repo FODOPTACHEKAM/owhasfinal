@@ -41,7 +41,7 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
   final cloudFuture = _pingWithStrictTimeout(cloudUrl, cloudParallelTimeout);
 
   final fixedCandidates = <String>[
-    // 'http://10.50.1.5:5501',   // ← University VLAN fixed IP (uncomment + edit when deployed)
+    'http://atd.ictu.loc',        // ICTU university VLAN (Nginx on port 80)
     'http://192.168.137.1:5501',  // Windows Mobile Hotspot
     'http://10.0.0.1:5501',
     'http://192.168.43.1:5501',   // Android hotspot

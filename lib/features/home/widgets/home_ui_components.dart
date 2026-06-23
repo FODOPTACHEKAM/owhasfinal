@@ -58,7 +58,7 @@ class ServerStatusBanner extends StatelessWidget {
             'owhas.org',
           ),
           ServerConnectionStatus.wifi => (
-            const Color(0xFF1A3A6B),
+            const Color(0xFFE53935),
             Icons.wifi_rounded,
             'Wi-Fi Server',
             _shortUrl(notifier.serverUrl),
