@@ -194,6 +194,9 @@
             transition:border-color .3s;
         }
         .face-oval-ring.detected{border-color:#10b981;box-shadow:0 0 0 2px rgba(16,185,129,.4)}
+        .face-oval-ring.challenge{border-color:#f59e0b;box-shadow:0 0 0 2px rgba(245,158,11,.4);animation:liveness-pulse 1s ease-in-out infinite}
+        .face-oval-ring.passed{border-color:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.5)}
+        @keyframes liveness-pulse{0%,100%{box-shadow:0 0 0 2px rgba(245,158,11,.4)}50%{box-shadow:0 0 0 5px rgba(245,158,11,.15)}}
         .face-status{
             position:absolute;bottom:12px;left:0;right:0;text-align:center;
             color:#fff;font-size:.8rem;font-weight:500;
@@ -312,6 +315,8 @@
                 <canvas id="webcamCanvas" style="display:none;position:absolute;pointer-events:none"></canvas>
                 <img id="facePreview" alt="Captured photo"
                      style="display:none;width:100%;height:100%;object-fit:cover;border-radius:inherit">
+                <div class="face-oval" id="faceOval" style="display:none"></div>
+                <div class="face-oval-ring" id="faceOvalRing" style="display:none"></div>
                 <div class="face-status" id="faceStatus">Loading face models…</div>
             </div>
 
@@ -323,7 +328,7 @@
 
             <!-- Guide -->
             <div class="face-guide-row">
-                <span>Tap <strong>Take Photo</strong>. Look directly at the camera — on PC your webcam opens automatically (HTTPS only).</span>
+                <span>Tap <strong>Take Photo</strong>, then follow the prompts. You'll show a neutral face, then smile to verify liveness.</span>
             </div>
 
             <button class="button-primary" id="captureBtn" type="button" disabled>
@@ -444,6 +449,17 @@ class FacePhotoManager {
         this.modelsLoaded  = false;
         this.useWebcam     = false;
         this.stream        = null;
+        this._livenessState          = 'IDLE';
+        this._neutralFrames          = 0;
+        this._smileFrames            = 0;
+        this._loopTimer              = null;
+        this._loopStartTime          = 0;
+        this._livenessVerified       = false;
+        this._mobilePhase            = 0;
+        this._mobileNeutralBiometrics = null;
+        this._mobileRetries          = 0;
+        this._ovalRingEl             = document.getElementById('faceOvalRing');
+        this._ovalEl                 = document.getElementById('faceOval');
     }
 
     setStatus(msg)  { if (this.statusEl)   this.statusEl.textContent   = msg; }
@@ -540,7 +556,7 @@ class FacePhotoManager {
             return;
         }
 
-        const biometrics = this._extractBiometrics(detection);
+        const biometrics = this._extractBiometrics(detection, false);
         this.descriptor  = biometrics.descriptor;
         this.setStatus('Face captured ✓ Checking…');
         this.onCaptured(biometrics);
@@ -551,7 +567,7 @@ class FacePhotoManager {
     async _onFileSelected(e) {
         const file = e.target.files[0];
         if (!file) return;
-        this.setStatus('Analysing photo...');
+        this.setStatus('Analysing photo…');
 
         const imgUrl = URL.createObjectURL(file);
         this.previewEl.src = imgUrl;
@@ -575,7 +591,83 @@ class FacePhotoManager {
             return;
         }
 
-        const biometrics = this._extractBiometrics(detection);
+        const happy = detection.expressions.happy;
+
+        if (this._mobilePhase === 1) {
+            if (happy >= 0.4) {
+                this.setStatus('Please keep a NEUTRAL expression (don\'t smile). Tap Take Photo again.');
+                this.previewEl.style.display = 'none';
+                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
+                return;
+            }
+            this._mobileNeutralBiometrics = this._extractBiometrics(detection, false);
+            this._mobilePhase = 2;
+            this.setStatus('Neutral captured! Now tap Take Photo and SMILE.');
+            this.previewEl.style.display = 'none';
+            if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
+            return;
+        }
+
+        if (this._mobilePhase === 2) {
+            if (happy <= 0.45) {
+                this._mobileRetries++;
+                if (this._mobileRetries >= 3) {
+                    this._mobilePhase = 0;
+                    this._mobileNeutralBiometrics = null;
+                    const biometrics = this._extractBiometrics(detection, false);
+                    this.descriptor  = biometrics.descriptor;
+                    this.setStatus('Liveness check skipped after 3 attempts. Proceeding…');
+                    this.onCaptured(biometrics);
+                    return;
+                }
+                this.setStatus('You need to SMILE in this photo. Tap Take Photo and smile!');
+                this.previewEl.style.display = 'none';
+                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
+                return;
+            }
+
+            const neutralDesc = this._mobileNeutralBiometrics.descriptor;
+            const smileDesc   = Array.from(detection.descriptor);
+            const dist = Math.sqrt(neutralDesc.reduce((sum, v, i) => sum + Math.pow(v - smileDesc[i], 2), 0));
+            if (dist > 0.45) {
+                this.setStatus('The two photos must be of the same person. Starting over…');
+                this._mobilePhase = 1;
+                this._mobileNeutralBiometrics = null;
+                this.previewEl.style.display = 'none';
+                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
+                return;
+            }
+
+            const neutralHappy = this._mobileNeutralBiometrics.expressions?.happy ?? 0;
+            const delta = happy - neutralHappy;
+            if (delta < 0.2) {
+                this._mobileRetries++;
+                if (this._mobileRetries >= 3) {
+                    this._mobilePhase = 0;
+                    this._mobileNeutralBiometrics = null;
+                    const biometrics = this._extractBiometrics(detection, false);
+                    this.descriptor  = biometrics.descriptor;
+                    this.setStatus('Liveness check skipped after 3 attempts. Proceeding…');
+                    this.onCaptured(biometrics);
+                    return;
+                }
+                this.setStatus('Expression didn\'t change enough. Smile bigger! Tap Take Photo.');
+                this.previewEl.style.display = 'none';
+                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
+                return;
+            }
+
+            this._mobilePhase = 0;
+            this._mobileNeutralBiometrics = null;
+            this._mobileRetries = 0;
+            const biometrics = this._extractBiometrics(detection, true);
+            this.descriptor  = biometrics.descriptor;
+            this.setStatus('Liveness verified — face captured!');
+            this.onCaptured(biometrics);
+            return;
+        }
+
+        const biometrics = this._extractBiometrics(detection, false);
         this.descriptor  = biometrics.descriptor;
         this.setStatus('Face captured ✓ Checking…');
         this.onCaptured(biometrics);
@@ -584,11 +676,13 @@ class FacePhotoManager {
     /* ── Shared ── */
 
     // Build a rich biometric profile from a full face-api detection result.
-    _extractBiometrics(detection) {
+    _extractBiometrics(detection, livenessVerified = false) {
         const expEntries = Object.entries(detection.expressions);
         const dominant   = expEntries.reduce((a, b) => a[1] > b[1] ? a : b);
         const box        = detection.detection.box;
         return {
+            // Liveness challenge result
+            livenessVerified,
             // Identity vector (128-dim) — used for uniqueness check
             descriptor:         Array.from(detection.descriptor),
             // Age & gender
@@ -616,11 +710,208 @@ class FacePhotoManager {
     triggerCapture() {
         if (!this.modelsLoaded) { this.setStatus('Models still loading, please wait...'); return; }
         if (this.useWebcam) {
-            this._captureFromWebcam();
+            this._runLivenessLoop();
         } else {
+            if (this._mobilePhase === 0) {
+                this._mobilePhase = 1;
+                this.setStatus('Photo 1 of 2: Keep a NEUTRAL expression');
+            }
             this.fileInputEl.value = '';
             this.fileInputEl.click();
         }
+    }
+
+    /* ── Webcam liveness loop ── */
+
+    _runLivenessLoop() {
+        this._cancelLivenessLoop();
+        this._livenessState    = 'DETECTING_NEUTRAL';
+        this._neutralFrames    = 0;
+        this._smileFrames      = 0;
+        this._livenessVerified = false;
+        this._loopStartTime    = Date.now();
+        this._showOvalOverlay(true);
+        this._setOvalRing('');
+        this.setStatus('Look at the camera with a neutral expression…');
+        this._livenessLoopTick();
+    }
+
+    async _livenessLoopTick() {
+        if (this._livenessState === 'PASSED' || this._livenessState === 'IDLE') return;
+
+        if (Date.now() - this._loopStartTime > 10000) {
+            this.setStatus('Liveness check timed out — capturing photo…');
+            this._fallbackSingleCapture();
+            return;
+        }
+
+        const video  = this.videoEl;
+        if (!video || video.readyState < 2) {
+            this._loopTimer = setTimeout(() => this._livenessLoopTick(), 100);
+            return;
+        }
+
+        const canvas = this.canvasEl;
+        canvas.width  = video.videoWidth  || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+
+        const lightOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+        const detection = await faceapi.detectSingleFace(canvas, lightOptions).withFaceExpressions();
+
+        if (this._livenessState === 'PASSED' || this._livenessState === 'IDLE') return;
+
+        this._processLivenessTick(detection);
+
+        if (this._livenessState !== 'VERIFYING_SMILE' && this._livenessState !== 'PASSED') {
+            this._loopTimer = setTimeout(() => this._livenessLoopTick(), 50);
+        }
+    }
+
+    _processLivenessTick(detection) {
+        if (!detection) {
+            this._neutralFrames = 0;
+            this._smileFrames   = 0;
+            this._setOvalRing('');
+            this.setStatus('Position your face in the oval…');
+            return;
+        }
+
+        const happy = detection.expressions.happy;
+
+        switch (this._livenessState) {
+            case 'DETECTING_NEUTRAL':
+                this._setOvalRing('detected');
+                if (happy < 0.3) {
+                    this._neutralFrames++;
+                    if (this._neutralFrames >= 2) {
+                        this._livenessState = 'WAITING_SMILE';
+                        this._smileFrames   = 0;
+                        this._setOvalRing('challenge');
+                        this.setStatus('Now SMILE for the camera!');
+                    } else {
+                        this.setStatus('Hold still… detecting neutral face…');
+                    }
+                } else {
+                    this._neutralFrames = 0;
+                    this.setStatus('Keep a neutral expression (don\'t smile yet)…');
+                }
+                break;
+
+            case 'WAITING_SMILE':
+                this._setOvalRing('challenge');
+                if (happy > 0.55) {
+                    this._smileFrames++;
+                    if (this._smileFrames >= 2) {
+                        this._livenessState = 'VERIFYING_SMILE';
+                        this.setStatus('Smile detected! Capturing…');
+                        this._setOvalRing('passed');
+                        this._completeLivenessCapture();
+                    } else {
+                        this.setStatus('Almost… keep smiling!');
+                    }
+                } else {
+                    this._smileFrames = 0;
+                    if (happy < 0.2) {
+                        this.setStatus('Smile for the camera!');
+                    } else {
+                        this.setStatus('Almost there — bigger smile!');
+                    }
+                }
+                break;
+        }
+    }
+
+    async _completeLivenessCapture() {
+        const video  = this.videoEl;
+        const canvas = this.canvasEl;
+        canvas.width  = video.videoWidth  || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+
+        this.previewEl.src           = canvas.toDataURL('image/jpeg', 0.92);
+        this.previewEl.style.display = 'block';
+        this.videoEl.style.display   = 'none';
+        if (this.placeholderEl) this.placeholderEl.style.display = 'none';
+        this._stopStream();
+
+        const options   = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
+        const detection = await faceapi
+            .detectSingleFace(canvas, options)
+            .withFaceLandmarks()
+            .withFaceDescriptor()
+            .withAgeAndGender()
+            .withFaceExpressions();
+
+        if (!detection) {
+            this.setStatus('Face lost during capture — try again.');
+            this._showOvalOverlay(false);
+            this._livenessState = 'IDLE';
+            this.previewEl.style.display = 'none';
+            await this._startWebcam();
+            return;
+        }
+
+        this._livenessState    = 'PASSED';
+        this._livenessVerified = true;
+        const biometrics       = this._extractBiometrics(detection, true);
+        this.descriptor        = biometrics.descriptor;
+        this._showOvalOverlay(false);
+        this.setStatus('Liveness verified — face captured!');
+        this.onCaptured(biometrics);
+    }
+
+    async _fallbackSingleCapture() {
+        this._cancelLivenessLoop();
+        this._showOvalOverlay(false);
+        const video  = this.videoEl;
+        const canvas = this.canvasEl;
+        canvas.width  = video.videoWidth  || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+
+        this.previewEl.src           = canvas.toDataURL('image/jpeg', 0.92);
+        this.previewEl.style.display = 'block';
+        this.videoEl.style.display   = 'none';
+        if (this.placeholderEl) this.placeholderEl.style.display = 'none';
+        this._stopStream();
+
+        const options   = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
+        const detection = await faceapi
+            .detectSingleFace(canvas, options)
+            .withFaceLandmarks()
+            .withFaceDescriptor()
+            .withAgeAndGender()
+            .withFaceExpressions();
+
+        if (!detection) {
+            this.setStatus('No face detected — try again.');
+            this.previewEl.style.display = 'none';
+            await this._startWebcam();
+            return;
+        }
+
+        const biometrics = this._extractBiometrics(detection, false);
+        this.descriptor  = biometrics.descriptor;
+        this.setStatus('Face captured (liveness not confirmed).');
+        this.onCaptured(biometrics);
+    }
+
+    _cancelLivenessLoop() {
+        if (this._loopTimer) { clearTimeout(this._loopTimer); this._loopTimer = null; }
+        this._livenessState = 'IDLE';
+        this._neutralFrames = 0;
+        this._smileFrames   = 0;
+    }
+
+    _setOvalRing(cls) {
+        if (!this._ovalRingEl) return;
+        this._ovalRingEl.className = 'face-oval-ring' + (cls ? ' ' + cls : '');
+    }
+
+    _showOvalOverlay(show) {
+        if (this._ovalEl)     this._ovalEl.style.display     = show ? '' : 'none';
+        if (this._ovalRingEl) this._ovalRingEl.style.display = show ? '' : 'none';
     }
 
     _stopStream() {
@@ -632,7 +923,14 @@ class FacePhotoManager {
         if (this.videoEl) this.videoEl.style.display = 'none';
     }
 
-    stop() { this._stopStream(); }
+    stop() {
+        this._cancelLivenessLoop();
+        this._showOvalOverlay(false);
+        this._mobilePhase = 0;
+        this._mobileNeutralBiometrics = null;
+        this._mobileRetries = 0;
+        this._stopStream();
+    }
 }
 
 

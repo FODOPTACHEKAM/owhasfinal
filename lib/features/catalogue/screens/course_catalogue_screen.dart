@@ -122,6 +122,11 @@ class _CourseCatalogueScreenState extends State<CourseCatalogueScreen> {
         ),
         title:   const Text('Course Catalogue'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _load,
+            tooltip: 'Refresh',
+          ),
           FilledButton.icon(
             onPressed: _addSemester,
             icon:      const Icon(Icons.add, size: 18),

@@ -50,10 +50,11 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
       if (session != null && session.endTime != null &&
           DateTime.now().isAfter(session.endTime!)) {
         _refreshTimer?.cancel();
+        await _autoDownloadPdf();
         await sn.forceEndSession();
         rn.clear();
         if (!mounted) return;
-        context.showInfo('Session ended — time limit reached');
+        context.showInfo('Session ended — time limit reached. PDF saved.');
         context.navigateTo(RouteConstants.home);
         return;
       }
@@ -138,13 +139,32 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
         : context.showError('Failed to remove student');
   }
 
+  Future<void> _autoDownloadPdf() async {
+    try {
+      final sn      = context.read<SessionStateNotifier>();
+      final rn      = context.read<AttendanceRecordNotifier>();
+      final report  = context.read<ReportNotifier>();
+      final session = sn.activeSession;
+      if (session == null || rn.records.isEmpty) return;
+      await report.downloadPDFReport(
+        session:            session,
+        records:            rn.records,
+        previousAttendance: sn.previousAttendance,
+        sessionNumber:      sn.sessionNumber,
+      );
+    } catch (_) {}
+  }
+
   Future<void> _endSession() async {
     final confirm = await DialogHelpers.showEndSessionDialog(context);
     if (confirm != true || !mounted) return;
+    final sn = context.read<SessionStateNotifier>();
+    final rn = context.read<AttendanceRecordNotifier>();
     setState(() => _isEndingSession = true);
     try {
-      await context.read<SessionStateNotifier>().forceEndSession();
-      if (mounted) context.read<AttendanceRecordNotifier>().clear();
+      await _autoDownloadPdf();
+      await sn.forceEndSession();
+      if (mounted) rn.clear();
     } catch (e) {
       if (!mounted) return;
       setState(() => _isEndingSession = false);
@@ -152,6 +172,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
       return;
     }
     if (!mounted) return;
+    context.showSuccess('Session ended — PDF saved automatically');
     context.navigateTo(RouteConstants.home);
   }
 

@@ -215,3 +215,8 @@ See `presence_recognition.md` for a full explanation of each step.
 | `presence_recognition.md` | How the system checks that students are genuinely present |
 | `storage_duration.md` | How the time counter works and why a student's row sometimes disappears |
 | `after_registration.md` | What happens after a student registers, including registering for more than one course |
+
+
+
+
+By FODOP TACHEKAM IVAN JORDAN 

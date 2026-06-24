@@ -656,6 +656,7 @@ app.post('/api/biometric-connect', (req, res) => {
             expressions:        (faceBiometrics.expressions && typeof faceBiometrics.expressions === 'object') ? faceBiometrics.expressions : null,
             detectionScore:     (Number.isFinite(faceBiometrics.detectionScore))    ? faceBiometrics.detectionScore     : null,
             faceBox:            (faceBiometrics.faceBox && typeof faceBiometrics.faceBox === 'object') ? faceBiometrics.faceBox : null,
+            livenessVerified:   (typeof faceBiometrics.livenessVerified === 'boolean') ? faceBiometrics.livenessVerified : false,
         };
     }
 
@@ -679,7 +680,7 @@ app.post('/api/biometric-connect', (req, res) => {
         time: new Date().toLocaleString(),
     });
 
-    console.log(`[FACE-OK] ${username} (${matricule}) faceId=${faceId} PIN=${pin}${isOnlineSession ? ' [heartbeat armed]' : ''}`);
+    console.log(`[FACE-OK] ${username} (${matricule}) faceId=${faceId} liveness=${bio?.livenessVerified ?? false} PIN=${pin}${isOnlineSession ? ' [heartbeat armed]' : ''}`);
     res.status(200).json({
         ok:      true,
         message: `Successfully registered for ${session.courseName}!`,
