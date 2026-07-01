@@ -396,6 +396,10 @@
                 <div class="reg-success-course" id="successCourse"></div>
                 <div class="reg-success-label">Keep this page open to confirm attendance.</div>
             </div>
+            <button class="button-secondary" id="newCourseBtn" type="button"
+                    style="margin-top:1.25rem">
+                + Register for New Course
+            </button>
         </section>
 
         <!-- ── Status panel (always visible) ── -->
@@ -996,6 +1000,7 @@ class AttendanceRegistrationApp {
             successSection: document.getElementById('successSection'),
             successName:    document.getElementById('successName'),
             successCourse:  document.getElementById('successCourse'),
+            newCourseBtn:   document.getElementById('newCourseBtn'),
 
             // Status
             statusPanel:   document.getElementById('statusPanel'),
@@ -1014,6 +1019,7 @@ class AttendanceRegistrationApp {
         this.el.backToFaceBtn.addEventListener('click', () => this._goToStep(1));
         this.el.submitBtn.addEventListener('click',     () => this._handleSubmit());
         this.el.refreshGpsBtn.addEventListener('click', () => this._handleRefreshGps());
+        this.el.newCourseBtn.addEventListener('click',  () => this._registerForNewCourse());
 
         // Strip any non-digit characters the Android keyboard might inject
         // (some keyboards add spaces, dots, or Unicode digits on numeric mode)
@@ -1281,13 +1287,16 @@ class AttendanceRegistrationApp {
     }
 
     async _handleRefreshGps() {
+        if (!this._sessionRequiresGps) return;   // online mode only
+
         const btn   = this.el.refreshGpsBtn;
         const badge = this.el.gpsBadge;
         btn.disabled = true;
-        btn.textContent = 'Getting location…';
+        btn.textContent = 'Scanning GPS… (10 s)';
         badge.style.display = 'none';
+        this._status('Acquiring GPS location — please hold still…', 'info');
 
-        const pos = await this._getLocation(20000);
+        const pos = await this._getLocation(10000);
 
         btn.disabled = false;
         btn.textContent = 'Refresh GPS Location';
@@ -1296,6 +1305,7 @@ class AttendanceRegistrationApp {
             badge.className = 'gps-badge fail';
             badge.style.display = 'flex';
             badge.textContent = '✗ GPS unavailable — move to a window or open space';
+            this._status('GPS signal not found. Move closer to a window and try again.', 'error');
             return;
         }
 
@@ -1305,16 +1315,18 @@ class AttendanceRegistrationApp {
         if (acc <= 100) {
             badge.className = 'gps-badge good';
             badge.textContent = `✓ Good signal  ±${acc.toFixed(0)} m`;
+            this._status(`✓ GPS location confirmed (±${acc.toFixed(0)} m accuracy). Tap Register to submit.`, 'success');
         } else if (acc <= 300) {
             badge.className = 'gps-badge poor';
             badge.textContent = `~ Weak signal  ±${acc.toFixed(0)} m`;
+            this._status(`✓ GPS location saved — weak signal (±${acc.toFixed(0)} m). Tap Register to submit.`, 'success');
         } else {
             badge.className = 'gps-badge poor';
             badge.textContent = `~ Very weak  ±${acc.toFixed(0)} m (will be accepted)`;
+            this._status(`✓ GPS location saved — very weak signal (±${acc.toFixed(0)} m), will be accepted. Tap Register.`, 'success');
         }
         badge.style.display = 'flex';
         this.el.refreshGpsBtn.style.display = 'none';
-        this._status('Location saved — tap Register to submit.', 'success');
     }
 
     async _submitRegistration(position) {
@@ -1634,6 +1646,43 @@ class AttendanceRegistrationApp {
         this.faceDescriptor = null;
         this.faceBiometrics = null;
         this.faceId         = null;  // invalidate the used token
+    }
+
+    _registerForNewCourse() {
+        // Stop heartbeat if running (online session keep-alive)
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
+
+        // Clear saved registration so the restored-state path doesn't re-trigger
+        try { localStorage.removeItem('owhas_reg'); } catch (_) {}
+
+        // Reset all session state
+        this.validatedSession        = null;
+        this.currentPin              = '';
+        this.faceDescriptor          = null;
+        this.faceBiometrics          = null;
+        this.faceId                  = null;
+        this._sessionRequiresGps     = false;
+        this._cachedPosition         = null;
+        this._heartbeatData          = null;
+
+        // Clear PIN input and session badge
+        this.el.sessionPin.value = '';
+        this.el.sessionPanel.classList.add('hidden');
+
+        // Hide success section (it was shown with inline style — must clear that)
+        this.el.successSection.style.display = 'none';
+        this.el.successSection.classList.add('hidden');
+
+        // Restore inline display styles that _showRegisteredState force-set
+        this.el.pinSection.style.display = '';
+
+        // Navigate to step 0 (PIN entry)
+        this._goToStep(0);
+        this._status('Enter the PIN for your next session.', 'info');
+        this.el.sessionPin.focus();
     }
 
     _scheduleReset() {

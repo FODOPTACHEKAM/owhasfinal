@@ -18,6 +18,7 @@ class CoursePicker extends StatelessWidget {
     required this.hasCourses,
     required this.onSemesterTap,
     required this.onCourseTap,
+    this.onRefresh,
   });
 
   final TextEditingController semesterController;
@@ -27,6 +28,7 @@ class CoursePicker extends StatelessWidget {
   final bool                  hasCourses;
   final VoidCallback?         onSemesterTap;
   final VoidCallback?         onCourseTap;
+  final VoidCallback?         onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -38,12 +40,23 @@ class CoursePicker extends StatelessWidget {
           controller: semesterController,
           readOnly:   true,
           onTap:      onSemesterTap,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText:   'Semester',
             hintText:    'Tap to select semester',
-            border:      OutlineInputBorder(),
-            prefixIcon:  Icon(Icons.calendar_view_month_outlined),
-            suffixIcon:  Icon(Icons.arrow_drop_down),
+            border:      const OutlineInputBorder(),
+            prefixIcon:  const Icon(Icons.calendar_view_month_outlined),
+            suffixIcon:  Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (onRefresh != null)
+                  IconButton(
+                    icon: const Icon(Icons.refresh_rounded, size: 20),
+                    tooltip: 'Refresh catalogue',
+                    onPressed: onRefresh,
+                  ),
+                const Icon(Icons.arrow_drop_down),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: AppSpacing.md),

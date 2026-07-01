@@ -5,6 +5,7 @@ import '../../../core/constants/route_constants.dart';
 import '../../../core/extensions/context_extensions.dart';
 import '../../session/notifiers/session_state_notifier.dart';
 import '../../../theme.dart';
+import '../notifiers/server_status_notifier.dart';
 import '../widgets/home_animations.dart';
 import '../widgets/home_ui_components.dart';
 import '../widgets/role_card.dart';
@@ -72,6 +73,23 @@ class _HomeScreenState extends State<HomeScreen>
               child: AmbientBlob(size: 320, color: const Color(0xFF4A90D9).withValues(alpha: 0.15))),
           Positioned(bottom: 80, left: -70,
               child: AmbientBlob(size: 220, color: const Color(0xFF1A3A6B).withValues(alpha: 0.08))),
+          Positioned(
+            top: 0, right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8, right: 12),
+                child: IconButton(
+                  icon: const Icon(Icons.refresh_rounded, size: 22),
+                  tooltip: 'Refresh',
+                  color: const Color(0xFF1A3A6B).withValues(alpha: 0.5),
+                  onPressed: () {
+                    context.read<ServerStatusNotifier>().refresh();
+                    setState(() {});
+                  },
+                ),
+              ),
+            ),
+          ),
           SafeArea(
             child: LayoutBuilder(
               builder: (context, constraints) {

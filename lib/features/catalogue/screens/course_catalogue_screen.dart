@@ -110,6 +110,24 @@ class _CourseCatalogueScreenState extends State<CourseCatalogueScreen> {
     await _load();
   }
 
+  // ── Reset ─────────────────────────────────────────────────────────────────────
+
+  Future<void> _resetCatalogue() async {
+    final confirmed = await CatalogueDialogs.showDeleteConfirm(
+      context,
+      title:   'Reset Catalogue',
+      content: 'This will discard all your changes and restore the original courses from the app defaults. This cannot be undone.',
+    );
+    if (!confirmed || !mounted) return;
+    await CourseService.resetToDefaults();
+    await _load();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Catalogue restored to defaults')),
+      );
+    }
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────────
 
   @override
@@ -146,11 +164,24 @@ class _CourseCatalogueScreenState extends State<CourseCatalogueScreen> {
   Widget _buildList() {
     return ListView.builder(
       padding:   const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.md),
-      itemCount: _semesters.length,
+      itemCount: _semesters.length + 1,
       itemBuilder: (_, i) {
+        if (i == _semesters.length) {
+          return Padding(
+            padding: const EdgeInsets.only(top: AppSpacing.lg, bottom: AppSpacing.xl),
+            child: OutlinedButton.icon(
+              onPressed: _resetCatalogue,
+              icon:  const Icon(Icons.restore_rounded, size: 18),
+              label: const Text('Reset to Default Catalogue'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+                side: BorderSide(color: Theme.of(context).colorScheme.error.withValues(alpha: 0.4)),
+              ),
+            ),
+          );
+        }
         final semester = _semesters[i];
         return SemesterTile(
-          // KEY: ensures Flutter disposes old tile when semester list changes.
           key:            ValueKey(semester.id),
           semester:       semester,
           courses:        _coursesFor(semester.id),

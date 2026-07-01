@@ -66,6 +66,15 @@ class CourseService {
     await prefs.setString(_seedVersionKey, CourseManagement.version);
   }
 
+  /// Wipe all user edits and restore the catalogue from course_management.dart.
+  static Future<void> resetToDefaults() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_seedVersionKey);
+    await prefs.remove(_semesterKey);
+    await prefs.remove(_courseKey);
+    await seedFromManagement();
+  }
+
   // ── Semesters ──────────────────────────────────────────────────────────────
 
   static Future<List<Semester>> loadSemesters() async {

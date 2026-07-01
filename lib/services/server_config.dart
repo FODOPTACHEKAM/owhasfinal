@@ -27,6 +27,20 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
   final httpFallback = ServerConfig().onlineUrlHttp;  // http://owhas.org:5501
   final emulatorUrl  = ServerConfig().emulatorUrl;
 
+  // ── 0. Workers VLAN first — if on the Workers Wi-Fi, always use local ─────
+  //    Check these before cloud so the app never routes through the internet
+  //    when the VLAN server is reachable on the same network.
+  const workersUrls = <String>[
+    'http://10.13.14.164:5501',   // Workers Wi-Fi — direct IP
+    'http://atd.ictu.loc',        // Workers Wi-Fi — VLAN DNS (Nginx on port 80)
+  ];
+  for (final url in workersUrls) {
+    if (await _pingWithStrictTimeout(url, const Duration(milliseconds: 800))) {
+      debugPrint('[ServerConfig] Workers VLAN detected (priority): $url');
+      return _ServerDetectionResult(url: url, isOnline: false);
+    }
+  }
+
   // ── 1. Cloud first — covers the most common case with minimal delay ──────────
   if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 2))) {
     debugPrint('[ServerConfig] Cloud detected (priority check): $cloudUrl');
@@ -41,7 +55,6 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
   final cloudFuture = _pingWithStrictTimeout(cloudUrl, cloudParallelTimeout);
 
   final fixedCandidates = <String>[
-    'http://atd.ictu.loc',        // ICTU university VLAN (Nginx on port 80)
     'http://192.168.137.1:5501',  // Windows Mobile Hotspot
     'http://10.0.0.1:5501',
     'http://192.168.43.1:5501',   // Android hotspot

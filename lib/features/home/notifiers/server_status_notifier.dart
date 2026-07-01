@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import '../../../services/server_config.dart';
 import '../../../services/api_service.dart';
 
-enum ServerConnectionStatus { checking, cloud, wifi, hybrid, none }
+enum ServerConnectionStatus { checking, cloud, wifi, hybrid, workers, none }
 
 class ServerStatusNotifier extends ChangeNotifier {
   ServerConnectionStatus _status    = ServerConnectionStatus.checking;
@@ -32,11 +32,15 @@ class ServerStatusNotifier extends ChangeNotifier {
     //    detect(), so we just read the pre-computed flags — no extra round-trip.
     try {
       await ApiService().pingServer();
-      _status = ServerConfig().isHybrid
-          ? ServerConnectionStatus.hybrid
-          : ServerConfig().isOnline
-              ? ServerConnectionStatus.cloud
-              : ServerConnectionStatus.wifi;
+      final url = ServerConfig().baseUrl;
+      final isWorkers = url.contains('10.13.14.');
+      _status = isWorkers
+          ? ServerConnectionStatus.workers
+          : ServerConfig().isHybrid
+              ? ServerConnectionStatus.hybrid
+              : ServerConfig().isOnline
+                  ? ServerConnectionStatus.cloud
+                  : ServerConnectionStatus.wifi;
       notifyListeners();
       return;
     } catch (_) {}

@@ -69,6 +69,12 @@ class ServerStatusBanner extends StatelessWidget {
             'Hybrid Network',
             '${_shortUrl(notifier.serverUrl)} + cloud',
           ),
+          ServerConnectionStatus.workers => (
+            const Color(0xFF212121),
+            Icons.business_rounded,
+            'Workers Network',
+            _shortUrl(notifier.serverUrl),
+          ),
           ServerConnectionStatus.none => (
             const Color(0xFFE67E22),
             Icons.wifi_off_rounded,

@@ -261,6 +261,7 @@ class _SessionSetupScreenState extends State<SessionSetupScreen> {
           hasCourses:         _semesterCourses.isNotEmpty,
           onSemesterTap:      _pickSemester,
           onCourseTap:        _pickCourse,
+          onRefresh:          _loadCatalogue,
         );
 
   Widget _courseNameField() => TextFormField(
