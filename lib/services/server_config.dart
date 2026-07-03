@@ -27,21 +27,27 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
   final httpFallback = ServerConfig().onlineUrlHttp;  // http://owhas.org:5501
   final emulatorUrl  = ServerConfig().emulatorUrl;
 
-  // ── 0. Workers VLAN first — if on the Workers Wi-Fi, always use local ─────
-  //    Check these before cloud so the app never routes through the internet
-  //    when the VLAN server is reachable on the same network.
-  const workersUrls = <String>[
+  // ── 0. Local servers first — always prefer local over cloud ──────────────────
+  //    Check all known local hotspot / VLAN IPs before hitting owhas.org.
+  //    This prevents the app showing "Cloud Server" when the lecturer's PC
+  //    is sharing its hotspot (which also provides internet to the phone).
+  const localPriorityUrls = <String>[
     'http://10.13.14.164:5501',   // Workers Wi-Fi — direct IP
-    'http://atd.ictu.loc',        // Workers Wi-Fi — VLAN DNS (Nginx on port 80)
+    'http://atd.ictu.loc',        // Workers/ICTU VLAN DNS (Nginx on port 80)
+    'http://192.168.137.1:5501',  // Windows Mobile Hotspot (most common for PC)
+    'http://192.168.43.1:5501',   // Android hotspot
+    'http://172.20.10.1:5501',    // iOS hotspot
+    'http://10.0.0.1:5501',
+    'http://192.168.50.1:5501',
   ];
-  for (final url in workersUrls) {
+  for (final url in localPriorityUrls) {
     if (await _pingWithStrictTimeout(url, const Duration(milliseconds: 800))) {
-      debugPrint('[ServerConfig] Workers VLAN detected (priority): $url');
+      debugPrint('[ServerConfig] Local server detected (priority): $url');
       return _ServerDetectionResult(url: url, isOnline: false);
     }
   }
 
-  // ── 1. Cloud first — covers the most common case with minimal delay ──────────
+  // ── 1. Cloud — only reached if no local server responded ─────────────────────
   if (await _pingWithStrictTimeout(cloudUrl, const Duration(seconds: 2))) {
     debugPrint('[ServerConfig] Cloud detected (priority check): $cloudUrl');
     return _ServerDetectionResult(url: cloudUrl, isOnline: true);
@@ -55,10 +61,10 @@ Future<_ServerDetectionResult> _detectServerInBackground(void _) async {
   final cloudFuture = _pingWithStrictTimeout(cloudUrl, cloudParallelTimeout);
 
   final fixedCandidates = <String>[
-    'http://192.168.137.1:5501',  // Windows Mobile Hotspot
+    'http://192.168.137.1:5501',  // Windows Mobile Hotspot (fallback scan)
+    'http://192.168.43.1:5501',   // Android hotspot (fallback scan)
+    'http://172.20.10.1:5501',    // iOS hotspot (fallback scan)
     'http://10.0.0.1:5501',
-    'http://192.168.43.1:5501',   // Android hotspot
-    'http://172.20.10.1:5501',    // iOS hotspot
     'http://192.168.50.1:5501',
   ];
   final subnetCandidates = <String>[
