@@ -581,7 +581,7 @@ app.post('/api/verify-face', (req, res) => {
 // re-checks uniqueness to close the race-condition window, then commits
 // the student to the session permanently.
 app.post('/api/biometric-connect', (req, res) => {
-    const { username, matricule, email, sessionPin, sessionToken, faceId, latitude, longitude, faceBiometrics } = req.body;
+    const { username, matricule, email, sessionPin, sessionToken, faceId, latitude, longitude, faceBiometrics, gpsWaived } = req.body;
     const studentIP = req.headers['x-forwarded-for'] || req.ip || req.socket.remoteAddress;
 
     if (!username || !matricule || !email)
@@ -624,8 +624,13 @@ app.post('/api/biometric-connect', (req, res) => {
         return res.status(200).send('You are already registered for this session.');
 
     // ── GPS geofence ──────────────────────────────────────────────────────────
-    const geoCheck = checkGeofence(session.targetLocation, latitude, longitude, req.body.gpsAccuracy);
-    if (!geoCheck.ok) return res.status(403).send(geoCheck.reason);
+    // Skip geofence if student exhausted all 5 GPS refresh attempts (gpsWaived)
+    if (!gpsWaived) {
+        const geoCheck = checkGeofence(session.targetLocation, latitude, longitude, req.body.gpsAccuracy);
+        if (!geoCheck.ok) return res.status(403).send(geoCheck.reason);
+    } else {
+        console.log(`[GPS-WAIVED] ${username} (${matricule}) — GPS unavailable after 5 attempts, admitted without location.`);
+    }
 
     // ── Commit ────────────────────────────────────────────────────────────────
     pending.used = true; // consume the token (single-use)

@@ -1430,7 +1430,7 @@ class AttendanceRegistrationApp {
                     '⚠ GPS could not be found after 5 attempts. Submitting without location — the lecturer will review your entry.',
                     'warning'
                 );
-                await this._submitRegistration(null);
+                await this._submitRegistration(null, true); // gpsWaived = true
                 return;
             }
 
@@ -1465,7 +1465,7 @@ class AttendanceRegistrationApp {
         this.el.refreshGpsBtn.style.display = 'none';
     }
 
-    async _submitRegistration(position) {
+    async _submitRegistration(position, gpsWaived = false) {
         const payload = {
             username:  this.el.username.value.trim(),
             matricule: this.el.matricule.value.trim(),
@@ -1477,6 +1477,8 @@ class AttendanceRegistrationApp {
             payload.longitude   = position.coords.longitude;
             payload.gpsAccuracy = position.coords.accuracy;
         }
+
+        if (gpsWaived) payload.gpsWaived = true;
 
         // Attach the one-time face token issued by /api/verify-face
         if (this.faceId)        payload.faceId        = this.faceId;
