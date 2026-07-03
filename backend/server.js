@@ -1023,6 +1023,26 @@ if (SOCKET) {
         console.log(`[Worker ${process.pid}] Listening on port: ${PORT}`);
         _onListening();
     });
+
+    server.on('error', err => {
+        if (err.code === 'EADDRINUSE') {
+            console.log(`[Server] Port ${PORT} already in use — killing the old process and restarting…`);
+            const cmd = process.platform === 'win32'
+                ? `for /f "tokens=5" %a in ('netstat -ano ^| findstr :${PORT}') do taskkill /PID %a /F`
+                : `lsof -ti tcp:${PORT} | xargs kill -9`;
+            exec(cmd, () => {
+                setTimeout(() => {
+                    server = app.listen(PORT, '0.0.0.0', () => {
+                        console.log(`[Worker ${process.pid}] Restarted — Listening on port: ${PORT}`);
+                        _onListening();
+                    });
+                }, 1000);
+            });
+        } else {
+            console.error(`[Server] Fatal error: ${err.message}`);
+            process.exit(1);
+        }
+    });
 }
 
 // Clean up the socket file on graceful shutdown.
