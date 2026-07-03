@@ -107,20 +107,28 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
   }
 
   Future<void> _showAddManualStudentDialog() async {
-    final data = await DialogHelpers.showAddManualStudentDialog(context);
-    if (data == null || !mounted) return;
-    final sn      = context.read<SessionStateNotifier>();
-    final rn      = context.read<AttendanceRecordNotifier>();
+    final sn = context.read<SessionStateNotifier>();
+    final rn = context.read<AttendanceRecordNotifier>();
     final session = sn.activeSession;
     if (session == null) return;
-    final success = await rn.registerManualStudent(
-      session: session, matricule: data.matricule,
-      studentName: data.name, email: data.email,
+
+    await DialogHelpers.showAddManualStudentDialog(
+      context,
+      onAdd: (data) async {
+        final success = await rn.registerManualStudent(
+          session:     session,
+          matricule:   data.matricule,
+          studentName: data.name,
+          email:       data.email,
+        );
+        if (success) {
+          // Immediately refresh so count chips update right away
+          await rn.refreshRecords(session);
+          return null;           // null = success
+        }
+        return rn.error ?? 'Failed to add student';
+      },
     );
-    if (!mounted) return;
-    success
-        ? context.showSuccess('Student added manually')
-        : context.showError(rn.error ?? 'Failed to add student');
   }
 
   Future<void> _confirmRemoveStudent(dynamic record) async {
