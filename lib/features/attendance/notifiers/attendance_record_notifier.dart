@@ -144,6 +144,15 @@ class AttendanceRecordNotifier extends ChangeNotifier with LoadingMixin {
       await _sessionService.registerManualStudent(
         matricule: matricule, studentName: studentName, email: email,
       );
+      // Also push to Node.js server so /api/stats counts this student.
+      // Best-effort — fails silently when offline.
+      try {
+        await _apiService.registerStudentOnServer(
+          username: studentName, matricule: matricule, email: email,
+        );
+      } catch (e) {
+        debugPrint('Manual student server sync failed (offline?): $e');
+      }
       await refreshRecords(session);
       success = true;
     });
