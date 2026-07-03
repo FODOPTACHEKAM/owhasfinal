@@ -12,7 +12,20 @@
           "package_name": "com.example.attendance_app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "484804376077-7ht9vjo6jgh1e7v0v1n6h1cj43fpe69p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.attendance_app",
+            "certificate_hash": "570f5edd928876648d05a63bf63816cb0c4e46cf"
+          }
+        },
+        {
+          "client_id": "484804376077-vkqggef4krh8urmru0uaic1rddvib89h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDxGbN2NHw67M_jj9ZaiC0OeP-ejbnHueI"
@@ -20,7 +33,20 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "484804376077-vkqggef4krh8urmru0uaic1rddvib89h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "484804376077-3iuonca5evrgo580haqtvtuc23vh4rtn.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "1234567890",
+                "app_store_id": "12345678"
+              }
+            }
+          ]
         }
       }
     }

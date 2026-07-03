@@ -141,6 +141,9 @@
         .button-gps:hover{border-color:var(--accent);color:var(--accent);background:rgba(0,132,212,.04)}
         .button-gps:disabled{opacity:.5;cursor:not-allowed}
         .gps-badge{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--gray-500);background:var(--gray-100);border:1px solid var(--gray-200);border-radius:20px;padding:3px 10px;margin-top:.4rem;width:fit-content;margin-left:auto;margin-right:auto}
+        .gps-progress-wrap{width:100%;background:var(--gray-200);border-radius:20px;height:6px;margin-top:.5rem;overflow:hidden;display:none}
+        .gps-progress-bar{height:6px;border-radius:20px;background:linear-gradient(90deg,var(--accent),#10b981);width:0%;transition:width 1s linear}
+        .gps-countdown{text-align:center;font-size:.78rem;color:var(--gray-500);margin-top:.3rem;display:none}
         .gps-badge.good{color:var(--success);border-color:rgba(16,185,129,.3);background:rgba(16,185,129,.06)}
         .gps-badge.poor{color:var(--warning);border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.05)}
         .gps-badge.fail{color:var(--error);border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.05)}
@@ -385,6 +388,10 @@
             </button>
             <button class="button-secondary" id="backToFaceBtn" type="button">← Retake Photo</button>
             <button class="button-gps" id="refreshGpsBtn" type="button" style="display:none">Refresh GPS Location</button>
+            <div class="gps-progress-wrap" id="gpsProgressWrap">
+                <div class="gps-progress-bar" id="gpsProgressBar"></div>
+            </div>
+            <div class="gps-countdown" id="gpsCountdown"></div>
             <div id="gpsBadge" style="display:none"></div>
         </section>
 
@@ -956,6 +963,7 @@ class AttendanceRegistrationApp {
         this._heartbeatData       = null;  // { token, matricule, pin, sessionToken }
         this._cachedPosition      = null;  // { position, cachedAt } — refreshed by Refresh GPS button
         this._sessionRequiresGps  = false; // set to true when session-info says requiresGps
+        this._gpsFailedAttempts   = 0;     // after 5 failures, auto-submit without GPS
 
         this._bindElements();
         this._bindListeners();
@@ -993,8 +1001,11 @@ class AttendanceRegistrationApp {
             email:          document.getElementById('email'),
             submitBtn:      document.getElementById('submitBtn'),
             backToFaceBtn:  document.getElementById('backToFaceBtn'),
-            refreshGpsBtn:  document.getElementById('refreshGpsBtn'),
-            gpsBadge:       document.getElementById('gpsBadge'),
+            refreshGpsBtn:   document.getElementById('refreshGpsBtn'),
+            gpsBadge:        document.getElementById('gpsBadge'),
+            gpsProgressWrap: document.getElementById('gpsProgressWrap'),
+            gpsProgressBar:  document.getElementById('gpsProgressBar'),
+            gpsCountdown:    document.getElementById('gpsCountdown'),
 
             // Step 3 – Registered
             successSection: document.getElementById('successSection'),
@@ -1289,39 +1300,102 @@ class AttendanceRegistrationApp {
     async _handleRefreshGps() {
         if (!this._sessionRequiresGps) return;   // online mode only
 
-        const btn   = this.el.refreshGpsBtn;
-        const badge = this.el.gpsBadge;
+        const TOTAL = 15; // seconds
+        const btn        = this.el.refreshGpsBtn;
+        const badge      = this.el.gpsBadge;
+        const progressWrap = this.el.gpsProgressWrap;
+        const progressBar  = this.el.gpsProgressBar;
+        const countdown    = this.el.gpsCountdown;
+
+        // ── Reset UI ──────────────────────────────────────────────────────────
         btn.disabled = true;
-        btn.textContent = 'Scanning GPS… (10 s)';
+        btn.textContent = 'Scanning GPS…';
         badge.style.display = 'none';
-        this._status('Acquiring GPS location — please hold still…', 'info');
+        progressWrap.style.display = 'block';
+        progressBar.style.width    = '0%';
+        countdown.style.display    = 'block';
+        countdown.textContent      = `Searching for satellites… ${TOTAL}s`;
+        this._status('Hold still — scanning for GPS signal…', 'info');
 
-        const pos = await this._getLocation(10000);
+        // ── Countdown ticker ──────────────────────────────────────────────────
+        let secondsLeft = TOTAL;
+        let done = false;
+        const tick = setInterval(() => {
+            if (done) { clearInterval(tick); return; }
+            secondsLeft--;
+            const pct = ((TOTAL - secondsLeft) / TOTAL) * 100;
+            progressBar.style.width = `${pct}%`;
+            if (secondsLeft > 0) {
+                countdown.textContent = `Searching for satellites… ${secondsLeft}s`;
+            } else {
+                countdown.textContent = 'Finalising…';
+            }
+        }, 1000);
 
-        btn.disabled = false;
+        // ── Actual GPS call (15 s) ────────────────────────────────────────────
+        const pos = await this._getLocation(TOTAL * 1000);
+        done = true;
+        clearInterval(tick);
+
+        // Fill bar to 100% regardless of result
+        progressBar.style.width    = '100%';
+        progressBar.style.transition = 'width .3s linear';
+
+        // Small pause so the student sees the bar complete
+        await new Promise(r => setTimeout(r, 350));
+
+        // ── Hide progress UI ──────────────────────────────────────────────────
+        progressWrap.style.display = 'none';
+        progressBar.style.width    = '0%';
+        progressBar.style.transition = 'width 1s linear';
+        countdown.style.display    = 'none';
+
+        btn.disabled    = false;
         btn.textContent = 'Refresh GPS Location';
 
+        // ── Show result ───────────────────────────────────────────────────────
         if (!pos) {
-            badge.className = 'gps-badge fail';
+            this._gpsFailedAttempts++;
+            const remaining = 5 - this._gpsFailedAttempts;
+
+            if (this._gpsFailedAttempts >= 5) {
+                this._gpsFailedAttempts = 0;
+                badge.className     = 'gps-badge poor';
+                badge.style.display = 'flex';
+                badge.textContent   = '⚠ GPS unavailable — proceeding without location';
+                this.el.refreshGpsBtn.style.display = 'none';
+                this._status(
+                    '⚠ GPS could not be found after 5 attempts. Submitting without location — the lecturer will review your entry.',
+                    'warning'
+                );
+                await this._submitRegistration(null);
+                return;
+            }
+
+            badge.className     = 'gps-badge fail';
             badge.style.display = 'flex';
-            badge.textContent = '✗ GPS unavailable — move to a window or open space';
-            this._status('GPS signal not found. Move closer to a window and try again.', 'error');
+            badge.textContent   = `✗ GPS unavailable — ${remaining} attempt${remaining === 1 ? '' : 's'} left before auto-submit`;
+            this._status(
+                `GPS signal not found. Move closer to a window and try again. (${remaining} attempt${remaining === 1 ? '' : 's'} left — will auto-submit after ${remaining} more)`,
+                'error'
+            );
             return;
         }
 
+        this._gpsFailedAttempts = 0; // reset counter on success
         const acc = pos.coords.accuracy;
         this._cachedPosition = { position: pos, cachedAt: Date.now() };
 
         if (acc <= 100) {
-            badge.className = 'gps-badge good';
+            badge.className   = 'gps-badge good';
             badge.textContent = `✓ Good signal  ±${acc.toFixed(0)} m`;
             this._status(`✓ GPS location confirmed (±${acc.toFixed(0)} m accuracy). Tap Register to submit.`, 'success');
         } else if (acc <= 300) {
-            badge.className = 'gps-badge poor';
+            badge.className   = 'gps-badge poor';
             badge.textContent = `~ Weak signal  ±${acc.toFixed(0)} m`;
             this._status(`✓ GPS location saved — weak signal (±${acc.toFixed(0)} m). Tap Register to submit.`, 'success');
         } else {
-            badge.className = 'gps-badge poor';
+            badge.className   = 'gps-badge poor';
             badge.textContent = `~ Very weak  ±${acc.toFixed(0)} m (will be accepted)`;
             this._status(`✓ GPS location saved — very weak signal (±${acc.toFixed(0)} m), will be accepted. Tap Register.`, 'success');
         }
@@ -1667,6 +1741,7 @@ class AttendanceRegistrationApp {
         this._sessionRequiresGps     = false;
         this._cachedPosition         = null;
         this._heartbeatData          = null;
+        this._gpsFailedAttempts      = 0;
 
         // Clear PIN input and session badge
         this.el.sessionPin.value = '';

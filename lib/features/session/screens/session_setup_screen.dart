@@ -11,6 +11,7 @@ import '../notifiers/session_state_notifier.dart';
 import '../widgets/session_form_fields.dart';
 import '../widgets/course_picker_section.dart';
 import '../widgets/timing_fields_section.dart';
+import '../widgets/google_signin_button.dart';
 
 /// Session creation form — refactored from `pages/session_setup_page.dart`.
 ///
@@ -216,6 +217,8 @@ class _SessionSetupScreenState extends State<SessionSetupScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   ..._headerSection(),
+                  const SizedBox(height: AppSpacing.md),
+                  const GoogleSignInBanner(),
                   const SizedBox(height: AppSpacing.xl),
                   UploadPreviousCard(isUploaded: _hasUploadedPrevious, onUpload: _uploadPreviousSession),
                   const SizedBox(height: AppSpacing.lg),

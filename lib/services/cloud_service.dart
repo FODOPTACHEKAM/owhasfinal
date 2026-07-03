@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import '../models/session.dart';
 import '../models/attendance_record.dart';
 
@@ -14,6 +15,7 @@ class CloudService {
   CloudService._internal();
 
   bool _initialized = false;
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
 
   // Getters for Firebase instances
   FirebaseAuth get _auth => FirebaseAuth.instance;
@@ -43,6 +45,40 @@ class CloudService {
   }
 
   // ==================== AUTHENTICATION ====================
+
+  /// Sign in with Google account
+  Future<User?> signInWithGoogle() async {
+    try {
+      final googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) return null; // user cancelled
+
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken:     googleAuth.idToken,
+      );
+
+      final userCredential = await _auth.signInWithCredential(credential);
+      final user = userCredential.user;
+
+      // Create/update lecturer document in Firestore
+      if (user != null) {
+        await _firestore.collection('lecturers').doc(user.uid).set({
+          'uid':         user.uid,
+          'email':       user.email ?? '',
+          'displayName': user.displayName ?? '',
+          'photoUrl':    user.photoURL ?? '',
+          'lastSignIn':  FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+
+      print('[CloudService] Google sign-in: ${user?.displayName}');
+      return user;
+    } catch (e) {
+      print('[CloudService] Google sign-in failed: $e');
+      rethrow;
+    }
+  }
 
   /// Sign in with email and password
   Future<UserCredential> signIn(String email, String password) async {

@@ -91,6 +91,7 @@ class AttendanceRecordNotifier extends ChangeNotifier with LoadingMixin {
         studentId:               matricule,
         matricule:               matricule,
         studentName:             username,
+        email:                   a['email'] as String?,
         joinedAt:                joinedAt,
         verifiedAt:              isVerified ? now : null,
         connectionDurationMinutes: duration,
