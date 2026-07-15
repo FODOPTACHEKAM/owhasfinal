@@ -197,9 +197,6 @@
             transition:border-color .3s;
         }
         .face-oval-ring.detected{border-color:#10b981;box-shadow:0 0 0 2px rgba(16,185,129,.4)}
-        .face-oval-ring.challenge{border-color:#f59e0b;box-shadow:0 0 0 2px rgba(245,158,11,.4);animation:liveness-pulse 1s ease-in-out infinite}
-        .face-oval-ring.passed{border-color:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.5)}
-        @keyframes liveness-pulse{0%,100%{box-shadow:0 0 0 2px rgba(245,158,11,.4)}50%{box-shadow:0 0 0 5px rgba(245,158,11,.15)}}
         .face-status{
             position:absolute;bottom:0;left:0;right:0;text-align:center;
             color:#fff;font-size:1rem;font-weight:700;
@@ -334,7 +331,7 @@
 
             <!-- Guide -->
             <div class="face-guide-row">
-                <span>Tap <strong>Take Photo</strong>, then follow the on-screen challenge — you may be asked to <strong>Blink</strong>, <strong>Smile</strong>, or <strong>Turn your head</strong>. Complete it within 4 seconds.</span>
+                <span>Position your face in the oval and tap <strong>Take Photo</strong> to capture your image.</span>
             </div>
 
             <button class="button-primary" id="captureBtn" type="button" disabled>
@@ -449,28 +446,6 @@ const HEARTBEAT_INTERVAL_MINUTES = 2;   // ← keep in sync with server.js
                       camera app (no HTTPS required).
                       File picker fallback on desktop/HTTP.
 ════════════════════════════════════════════════════════════ */
-/* ── Liveness challenge definitions ───────────────────────────────────────── */
-const LIVENESS_CHALLENGES = [
-    { id: 'BLINK',       label: 'BLINK your eyes',    icon: '👁️' },
-    { id: 'SMILE',       label: 'SMILE naturally',     icon: '😊' },
-    { id: 'TURN_LEFT',   label: 'TURN your head LEFT', icon: '←'  },
-    { id: 'TURN_RIGHT',  label: 'TURN your head RIGHT',icon: '→'  },
-];
-
-/* Eye Aspect Ratio — blink detection from 68-point landmarks */
-function _euclidDist(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2); }
-function _eyeAR(pts, s) {
-    return (_euclidDist(pts[s+1], pts[s+5]) + _euclidDist(pts[s+2], pts[s+4]))
-         / (2.0 * _euclidDist(pts[s], pts[s+3]));
-}
-function _avgEAR(pts) { return (_eyeAR(pts, 36) + _eyeAR(pts, 42)) / 2; }
-
-/* Head-turn offset: negative = left, positive = right (raw pixel space) */
-function _turnOffset(pts) {
-    const cx = (pts[36].x + pts[45].x) / 2;
-    const ew = Math.abs(pts[45].x - pts[36].x);
-    return ew < 1 ? 0 : (pts[30].x - cx) / ew;
-}
 
 class FacePhotoManager {
     constructor({ statusEl, progressEl, previewEl, placeholderEl, fileInputEl, videoEl, canvasEl, onCaptured }) {
@@ -486,19 +461,8 @@ class FacePhotoManager {
         this.modelsLoaded  = false;
         this.useWebcam     = false;
         this.stream        = null;
-        this._livenessState      = 'IDLE';
-        this._loopTimer          = null;
-        this._livenessVerified   = false;
-        this._currentChallenge   = null;   // { id, label, icon }
-        this._challengeFrames    = 0;      // consecutive positive frames
-        this._challengeAttempts  = 0;      // rounds tried (max 3 before fallback)
-        this._challengeDeadline  = 0;      // Date.now() + 4000
-        this._countdownTimer     = null;   // setInterval for countdown display
-        this._mobilePhase            = 0;
-        this._mobileNeutralBiometrics = null;
-        this._mobileRetries          = 0;
-        this._ovalRingEl             = document.getElementById('faceOvalRing');
-        this._ovalEl                 = document.getElementById('faceOval');
+        this._ovalRingEl   = document.getElementById('faceOvalRing');
+        this._ovalEl       = document.getElementById('faceOval');
     }
 
     setStatus(msg)  { if (this.statusEl)   this.statusEl.textContent   = msg; }
@@ -630,82 +594,6 @@ class FacePhotoManager {
             return;
         }
 
-        const happy = detection.expressions.happy;
-
-        if (this._mobilePhase === 1) {
-            if (happy >= 0.4) {
-                this.setStatus('Please keep a NEUTRAL expression (don\'t smile). Tap Take Photo again.');
-                this.previewEl.style.display = 'none';
-                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
-                return;
-            }
-            this._mobileNeutralBiometrics = this._extractBiometrics(detection, false);
-            this._mobilePhase = 2;
-            this.setStatus('Neutral captured! Now tap Take Photo and SMILE.');
-            this.previewEl.style.display = 'none';
-            if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
-            return;
-        }
-
-        if (this._mobilePhase === 2) {
-            if (happy <= 0.45) {
-                this._mobileRetries++;
-                if (this._mobileRetries >= 3) {
-                    this._mobilePhase = 0;
-                    this._mobileNeutralBiometrics = null;
-                    const biometrics = this._extractBiometrics(detection, false);
-                    this.descriptor  = biometrics.descriptor;
-                    this.setStatus('Liveness check skipped after 3 attempts. Proceeding…');
-                    this.onCaptured(biometrics);
-                    return;
-                }
-                this.setStatus('You need to SMILE in this photo. Tap Take Photo and smile!');
-                this.previewEl.style.display = 'none';
-                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
-                return;
-            }
-
-            const neutralDesc = this._mobileNeutralBiometrics.descriptor;
-            const smileDesc   = Array.from(detection.descriptor);
-            const dist = Math.sqrt(neutralDesc.reduce((sum, v, i) => sum + Math.pow(v - smileDesc[i], 2), 0));
-            if (dist > 0.45) {
-                this.setStatus('The two photos must be of the same person. Starting over…');
-                this._mobilePhase = 1;
-                this._mobileNeutralBiometrics = null;
-                this.previewEl.style.display = 'none';
-                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
-                return;
-            }
-
-            const neutralHappy = this._mobileNeutralBiometrics.expressions?.happy ?? 0;
-            const delta = happy - neutralHappy;
-            if (delta < 0.2) {
-                this._mobileRetries++;
-                if (this._mobileRetries >= 3) {
-                    this._mobilePhase = 0;
-                    this._mobileNeutralBiometrics = null;
-                    const biometrics = this._extractBiometrics(detection, false);
-                    this.descriptor  = biometrics.descriptor;
-                    this.setStatus('Liveness check skipped after 3 attempts. Proceeding…');
-                    this.onCaptured(biometrics);
-                    return;
-                }
-                this.setStatus('Expression didn\'t change enough. Smile bigger! Tap Take Photo.');
-                this.previewEl.style.display = 'none';
-                if (this.placeholderEl) this.placeholderEl.style.display = 'flex';
-                return;
-            }
-
-            this._mobilePhase = 0;
-            this._mobileNeutralBiometrics = null;
-            this._mobileRetries = 0;
-            const biometrics = this._extractBiometrics(detection, true);
-            this.descriptor  = biometrics.descriptor;
-            this.setStatus('Liveness verified — face captured!');
-            this.onCaptured(biometrics);
-            return;
-        }
-
         const biometrics = this._extractBiometrics(detection, false);
         this.descriptor  = biometrics.descriptor;
         this.setStatus('Face captured ✓ Checking…');
@@ -749,230 +637,11 @@ class FacePhotoManager {
     triggerCapture() {
         if (!this.modelsLoaded) { this.setStatus('Models still loading, please wait...'); return; }
         if (this.useWebcam) {
-            this._runLivenessLoop();
+            this._captureFromWebcam();
         } else {
-            if (this._mobilePhase === 0) {
-                this._mobilePhase = 1;
-                this.setStatus('Photo 1 of 2: Keep a NEUTRAL expression');
-            }
             this.fileInputEl.value = '';
             this.fileInputEl.click();
         }
-    }
-
-    /* ── Webcam liveness loop — random challenge system ── */
-
-    _pickChallenge() {
-        const list = LIVENESS_CHALLENGES;
-        return list[Math.floor(Math.random() * list.length)];
-    }
-
-    _runLivenessLoop() {
-        this._cancelLivenessLoop();
-        this._livenessVerified  = false;
-        this._challengeAttempts = 0;
-        this._showOvalOverlay(true);
-        this._startNextChallenge();
-    }
-
-    _startNextChallenge() {
-        this._currentChallenge  = this._pickChallenge();
-        this._challengeFrames   = 0;
-        this._livenessState     = 'CHALLENGE_ACTIVE';
-        this._challengeDeadline = Date.now() + 4000;
-
-        // Countdown display
-        if (this._countdownTimer) clearInterval(this._countdownTimer);
-        this.setStatus(`${this._currentChallenge.icon}  ${this._currentChallenge.label} — 4s`);
-        this._setOvalRing('challenge');
-
-        let secsLeft = 4;
-        this._countdownTimer = setInterval(() => {
-            secsLeft--;
-            if (secsLeft > 0 && this._livenessState === 'CHALLENGE_ACTIVE') {
-                this.setStatus(`${this._currentChallenge.icon}  ${this._currentChallenge.label} — ${secsLeft}s`);
-            } else {
-                clearInterval(this._countdownTimer);
-                this._countdownTimer = null;
-            }
-        }, 1000);
-
-        this._livenessLoopTick();
-    }
-
-    async _livenessLoopTick() {
-        if (this._livenessState === 'PASSED' || this._livenessState === 'IDLE') return;
-
-        // Challenge timed out
-        if (Date.now() > this._challengeDeadline) {
-            clearInterval(this._countdownTimer);
-            this._countdownTimer = null;
-            this._challengeAttempts++;
-
-            if (this._challengeAttempts >= 3) {
-                // 3 failed challenges → fallback single capture
-                this.setStatus('Liveness check failed — capturing photo anyway…');
-                this._fallbackSingleCapture();
-                return;
-            }
-            // New random challenge
-            this.setStatus('⏱ Time up! Try the next challenge…');
-            this._setOvalRing('');
-            setTimeout(() => this._startNextChallenge(), 800);
-            return;
-        }
-
-        const video = this.videoEl;
-        if (!video || video.readyState < 2) {
-            this._loopTimer = setTimeout(() => this._livenessLoopTick(), 100);
-            return;
-        }
-
-        const canvas = this.canvasEl;
-        canvas.width  = video.videoWidth  || 640;
-        canvas.height = video.videoHeight || 480;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-
-        const lightOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
-        const detection = await faceapi
-            .detectSingleFace(canvas, lightOpts)
-            .withFaceLandmarks()
-            .withFaceExpressions();
-
-        if (this._livenessState === 'PASSED' || this._livenessState === 'IDLE') return;
-
-        this._processLivenessTick(detection);
-
-        if (this._livenessState === 'CHALLENGE_ACTIVE') {
-            this._loopTimer = setTimeout(() => this._livenessLoopTick(), 100);
-        }
-    }
-
-    _processLivenessTick(detection) {
-        if (!detection) {
-            this._challengeFrames = 0;
-            this._setOvalRing('challenge');
-            return;
-        }
-
-        const ch  = this._currentChallenge;
-        const pts = detection.landmarks?.positions;
-        let met   = false;
-
-        switch (ch.id) {
-            case 'SMILE':
-                met = (detection.expressions?.happy ?? 0) > 0.55;
-                break;
-            case 'BLINK':
-                met = pts ? _avgEAR(pts) < 0.20 : false;
-                break;
-            case 'TURN_LEFT':
-                met = pts ? _turnOffset(pts) < -0.15 : false;
-                break;
-            case 'TURN_RIGHT':
-                met = pts ? _turnOffset(pts) >  0.15 : false;
-                break;
-        }
-
-        if (met) {
-            this._challengeFrames++;
-            if (this._challengeFrames >= 2) {
-                // Challenge passed
-                clearInterval(this._countdownTimer);
-                this._countdownTimer = null;
-                this._livenessState  = 'VERIFYING';
-                this._setOvalRing('passed');
-                this.setStatus(`✓ ${ch.icon} ${ch.label.split(' ')[0]} detected! Capturing…`);
-                this._completeLivenessCapture();
-            }
-        } else {
-            this._challengeFrames = 0;
-        }
-    }
-
-    async _completeLivenessCapture() {
-        const video  = this.videoEl;
-        const canvas = this.canvasEl;
-        canvas.width  = video.videoWidth  || 640;
-        canvas.height = video.videoHeight || 480;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-
-        this.previewEl.src           = canvas.toDataURL('image/jpeg', 0.92);
-        this.previewEl.style.display = 'block';
-        this.videoEl.style.display   = 'none';
-        if (this.placeholderEl) this.placeholderEl.style.display = 'none';
-        this._stopStream();
-
-        const options   = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
-        const detection = await faceapi
-            .detectSingleFace(canvas, options)
-            .withFaceLandmarks()
-            .withFaceDescriptor()
-            .withAgeAndGender()
-            .withFaceExpressions();
-
-        if (!detection) {
-            this.setStatus('Face lost during capture — try again.');
-            this._showOvalOverlay(false);
-            this._livenessState = 'IDLE';
-            this.previewEl.style.display = 'none';
-            await this._startWebcam();
-            return;
-        }
-
-        this._livenessState    = 'PASSED';
-        this._livenessVerified = true;
-        this._challengeAttempts = 0;
-        const biometrics       = this._extractBiometrics(detection, true);
-        this.descriptor        = biometrics.descriptor;
-        this._showOvalOverlay(false);
-        this.setStatus('Liveness verified — face captured!');
-        this.onCaptured(biometrics);
-    }
-
-    async _fallbackSingleCapture() {
-        this._cancelLivenessLoop();
-        this._showOvalOverlay(false);
-        const video  = this.videoEl;
-        const canvas = this.canvasEl;
-        canvas.width  = video.videoWidth  || 640;
-        canvas.height = video.videoHeight || 480;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-
-        this.previewEl.src           = canvas.toDataURL('image/jpeg', 0.92);
-        this.previewEl.style.display = 'block';
-        this.videoEl.style.display   = 'none';
-        if (this.placeholderEl) this.placeholderEl.style.display = 'none';
-        this._stopStream();
-
-        const options   = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.6 });
-        const detection = await faceapi
-            .detectSingleFace(canvas, options)
-            .withFaceLandmarks()
-            .withFaceDescriptor()
-            .withAgeAndGender()
-            .withFaceExpressions();
-
-        if (!detection) {
-            this.setStatus('No face detected — try again.');
-            this.previewEl.style.display = 'none';
-            await this._startWebcam();
-            return;
-        }
-
-        const biometrics = this._extractBiometrics(detection, false);
-        this.descriptor  = biometrics.descriptor;
-        this.setStatus('Face captured (liveness not confirmed).');
-        this.onCaptured(biometrics);
-    }
-
-    _cancelLivenessLoop() {
-        if (this._loopTimer)     { clearTimeout(this._loopTimer);       this._loopTimer     = null; }
-        if (this._countdownTimer){ clearInterval(this._countdownTimer); this._countdownTimer = null; }
-        this._livenessState     = 'IDLE';
-        this._challengeFrames   = 0;
-        this._challengeAttempts = 0;
-        this._currentChallenge  = null;
     }
 
     _setOvalRing(cls) {
@@ -995,12 +664,7 @@ class FacePhotoManager {
     }
 
     stop() {
-        this._cancelLivenessLoop();
         this._showOvalOverlay(false);
-        this._currentChallenge  = null;
-        this._mobilePhase       = 0;
-        this._mobileNeutralBiometrics = null;
-        this._mobileRetries     = 0;
         this._stopStream();
     }
 }

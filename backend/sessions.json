@@ -1,14 +1,14 @@
 {
-  "4277": {
-    "courseName": "Object Oriented Analysis Design and Implementation",
-    "courseCode": "SE413",
-    "lecturerId": "Tachekam",
-    "lecturerName": "Tachekam",
-    "sessionToken": "bgR2DmDqb1ng6SKblZXdUJgPV4J5F4vIyBSZBAuuLow=",
+  "1840": {
+    "courseName": "Algorithms and Data Structures",
+    "courseCode": "IFT2010",
+    "lecturerId": "Engineer Tachekam",
+    "lecturerName": "Engineer Tachekam",
+    "sessionToken": "M0rP6gtoYABOmlbaTG-UVL9woCOE1uqhOTU7vB2R0OI=",
     "targetLocation": null,
     "attendees": [],
     "faceDescriptors": [],
-    "createdAt": "2026-07-02T21:00:04.379Z",
-    "expiresAt": "2026-07-02T22:00:04.378Z"
+    "createdAt": "2026-07-03T11:07:22.166Z",
+    "expiresAt": "2026-07-03T11:27:22.166Z"
   }
 }
